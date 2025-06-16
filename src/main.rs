@@ -278,12 +278,19 @@ async fn handle_connection(
                     tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
                 }
                 ClientMessage::Login { username, password } => {
-                    let users = user_state.lock().await;
-                     // *** FIX 2: Hold the lock guard in a `let` binding. ***
-                    let peers = peer_map.lock().await;
-                    let tx = &peers.get(&conn_id).unwrap().tx;
-                    if let Some(profile) = users.iter().find(|u| u.username == username) {
-                        if verify_password(&profile.hash, &password) {
+                    // Lock user_state, get profile, drop lock
+                    let profile = {
+                        let users = user_state.lock().await;
+                        users.iter().find(|u| u.username == username).cloned()
+                    };
+
+                    if let Some(profile) = profile {
+                        println!("[DEBUG] Attempting login for username: {}", username);
+                        println!("[DEBUG] Provided password: {}", password);
+                        println!("[DEBUG] Stored hash: {}", profile.hash);
+                        let verify = verify_password(&profile.hash, &password);
+                        println!("[DEBUG] verify_password result: {}", verify);
+                        if verify {
                             let user_data = User {
                                 id: profile.id,
                                 username: profile.username.clone(),
@@ -291,16 +298,41 @@ async fn handle_connection(
                                 role: profile.role.clone(),
                             };
                             current_user = Some(user_data.clone());
-                            // Drop lock immediately
-                            peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
-                            tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
+
+                            // Lock peer_map, update peer, get tx, drop lock
+                            let tx = {
+                                let mut peers = peer_map.lock().await;
+                                if let Some(peer) = peers.get_mut(&conn_id) {
+                                    peer.user_id = Some(user_data.id);
+                                    println!("[DEBUG] Updated peer_map for user: {}", user_data.username);
+                                    peer.tx.clone()
+                                } else {
+                                    println!("[ERROR] Failed to find peer for conn_id: {}", conn_id);
+                                    continue;
+                                }
+                            };
+
+                            println!("[DEBUG] About to send AuthSuccess for user: {}", user_data.username);
+                            match tx.send(ServerMessage::AuthSuccess(user_data.clone())) {
+                                Ok(_) => println!("[DEBUG] AuthSuccess sent for user: {}", user_data.username),
+                                Err(e) => println!("[ERROR] Failed to send AuthSuccess: {}", e),
+                            }
                         } else {
+                            let tx = {
+                                let peers = peer_map.lock().await;
+                                peers.get(&conn_id).unwrap().tx.clone()
+                            };
                             tx.send(ServerMessage::AuthFailure(
                                 "Invalid credentials.".into(),
                             ))
                             .unwrap();
                         }
                     } else {
+                        println!("[DEBUG] Username not found: {}", username);
+                        let tx = {
+                            let peers = peer_map.lock().await;
+                            peers.get(&conn_id).unwrap().tx.clone()
+                        };
                         tx.send(ServerMessage::AuthFailure(
                             "Invalid credentials.".into(),
                         ))
