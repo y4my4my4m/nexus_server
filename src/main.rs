@@ -10,18 +10,21 @@ use common::{
 };
 use futures::{SinkExt, StreamExt};
 use ratatui::style::Color;
+use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{collections::HashMap, env, error::Error, fs, sync::Arc};
+use std::{collections::HashMap, env, error::Error, fs, path::Path, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, Mutex},
 };
+use tokio::task;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 const FORUM_DATA_PATH: &str = "forums.json";
 const USER_DATA_PATH: &str = "users.json";
+const DB_PATH: &str = "cyberpunk_bbs.db";
 
 struct Peer {
     user_id: Option<Uuid>,
@@ -48,6 +51,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let forum_state = Arc::new(Mutex::new(forums));
     let user_state = Arc::new(Mutex::new(users));
+
+    // Initialize the database
+    let _conn = init_db()?;
+
+    // Migrate forums from JSON file to DB if needed
+    migrate_forums_json_to_db().await?;
+    migrate_users_json_to_db().await?;
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -77,7 +87,16 @@ fn load_or_create<T: DeserializeOwned + Serialize>(
 
 async fn save_data<T: Serialize>(path: &str, data: &Mutex<T>) -> Result<(), Box<dyn Error>> {
     let data_lock = data.lock().await;
-    fs::write(path, serde_json::to_string_pretty(&*data_lock)?)?;
+    let json = serde_json::to_string_pretty(&*data_lock)
+        .map_err(|e| {
+            eprintln!("[ERROR] Failed to serialize data for {}: {}", path, e);
+            e
+        })?;
+    std::fs::write(path, &json)
+        .map_err(|e| {
+            eprintln!("[ERROR] Failed to write {}: {}", path, e);
+            e
+        })?;
     Ok(())
 }
 
@@ -96,6 +115,14 @@ fn verify_password(hash: &str, password: &str) -> bool {
     PasswordHash::new(hash)
         .and_then(|parsed_hash| Argon2::default().verify_password(password.as_bytes(), &parsed_hash))
         .is_ok()
+}
+
+async fn reload_users(user_state: &UserState) -> Result<(), Box<dyn Error>> {
+    let data = tokio::fs::read_to_string(USER_DATA_PATH).await?;
+    let users: Vec<UserProfile> = serde_json::from_str(&data)?;
+    let mut state = user_state.lock().await;
+    *state = users;
+    Ok(())
 }
 
 async fn handle_connection(
@@ -137,7 +164,6 @@ async fn handle_connection(
         };
         info!("SERVER RX: Received message from client {:?}: {:?}", conn_id, msg);
 
-        // *** FIX 1: Borrow `current_user` instead of moving it. ***
         if let Some(ref user) = current_user {
             match msg {
                 ClientMessage::Logout => {
@@ -145,38 +171,56 @@ async fn handle_connection(
                     peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = None;
                 }
                 ClientMessage::UpdatePassword(new_password) => {
-                    let mut users = user_state.lock().await;
-                    if let Some(profile) = users.iter_mut().find(|u| u.id == user.id) {
-                        profile.hash = hash_password(&new_password).unwrap();
-                        save_data(USER_DATA_PATH, &user_state).await.unwrap();
-                        // *** FIX 2: Hold the lock guard in a `let` binding. ***
-                        let peers = peer_map.lock().await;
-                        let tx = &peers.get(&conn_id).unwrap().tx;
-                        tx.send(ServerMessage::Notification(
-                            "Password updated.".into(),
-                            false,
-                        ))
-                        .unwrap();
+                    match db_update_user_password(user.id, &new_password).await {
+                        Ok(()) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification(
+                                "Password updated.".into(),
+                                false,
+                            )).unwrap();
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification(
+                                format!("Password update failed: {}", e),
+                                true,
+                            )).unwrap();
+                        }
                     }
                 }
                 ClientMessage::UpdateColor(serializable_color) => {
-                    let mut users = user_state.lock().await;
-                    if let Some(profile) = users.iter_mut().find(|u| u.id == user.id) {
-                        profile.color = serializable_color.0;
-                        save_data(USER_DATA_PATH, &user_state).await.unwrap();
-                        // *** FIX 2: Hold the lock guard in a `let` binding. ***
-                        let peers = peer_map.lock().await;
-                        let tx = &peers.get(&conn_id).unwrap().tx;
-                        tx.send(ServerMessage::Notification("Color updated.".into(), false))
-                            .unwrap();
+                    let color_str = format!("{:?}", serializable_color.0); // Store as string
+                    match db_update_user_color(user.id, &color_str).await {
+                        Ok(()) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification("Color updated.".into(), false)).unwrap();
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification(
+                                format!("Color update failed: {}", e),
+                                true,
+                            )).unwrap();
+                        }
                     }
                 }
                 ClientMessage::GetForums => {
-                    let forums = forum_state.lock().await;
-                    // *** FIX 2: Hold the lock guard in a `let` binding. ***
-                    let peers = peer_map.lock().await;
-                    let tx = &peers.get(&conn_id).unwrap().tx;
-                    tx.send(ServerMessage::Forums(forums.clone())).unwrap();
+                    match db_get_forums().await {
+                        Ok(forums) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Forums(forums)).unwrap();
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification(format!("Failed to load forums: {}", e), true)).unwrap();
+                        }
+                    }
                 }
                 ClientMessage::SendChatMessage(content) => {
                     let chat_msg = ServerMessage::NewChatMessage(ChatMessage {
@@ -191,39 +235,35 @@ async fn handle_connection(
                     title,
                     content,
                 } => {
-                    let mut forums = forum_state.lock().await;
-                    if let Some(forum) = forums.iter_mut().find(|f| f.id == forum_id) {
-                        let new_post = Post {
-                            id: Uuid::new_v4(),
-                            author: user.clone(),
-                            content,
-                        };
-                        let new_thread = Thread {
-                            id: Uuid::new_v4(),
-                            title,
-                            author: user.clone(),
-                            posts: vec![new_post],
-                        };
-                        forum.threads.push(new_thread);
-                        save_data(FORUM_DATA_PATH, &forum_state).await.unwrap();
-                        broadcast(&peer_map, &ServerMessage::Forums(forums.clone())).await;
+                    match db_create_thread(forum_id, &title, user.id, &content).await {
+                        Ok(()) => {
+                            // Send updated forums to all
+                            match db_get_forums().await {
+                                Ok(forums) => broadcast(&peer_map, &ServerMessage::Forums(forums)).await,
+                                Err(e) => eprintln!("[ERROR] Failed to reload forums after thread creation: {}", e),
+                            }
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification(format!("Failed to create thread: {}", e), true)).unwrap();
+                        }
                     }
                 }
                 ClientMessage::CreatePost { thread_id, content } => {
-                    let mut forums = forum_state.lock().await;
-                    if let Some(thread) = forums
-                        .iter_mut()
-                        .flat_map(|f| &mut f.threads)
-                        .find(|t| t.id == thread_id)
-                    {
-                        let new_post = Post {
-                            id: Uuid::new_v4(),
-                            author: user.clone(),
-                            content,
-                        };
-                        thread.posts.push(new_post);
-                        save_data(FORUM_DATA_PATH, &forum_state).await.unwrap();
-                        broadcast(&peer_map, &ServerMessage::Forums(forums.clone())).await;
+                    match db_create_post(thread_id, user.id, &content).await {
+                        Ok(()) => {
+                            // Send updated forums to all
+                            match db_get_forums().await {
+                                Ok(forums) => broadcast(&peer_map, &ServerMessage::Forums(forums)).await,
+                                Err(e) => eprintln!("[ERROR] Failed to reload forums after post creation: {}", e),
+                            }
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::Notification(format!("Failed to create post: {}", e), true)).unwrap();
+                        }
                     }
                 }
                 _ => {} // Ignore other messages when logged in
@@ -231,66 +271,15 @@ async fn handle_connection(
         } else { // Not logged in
             match msg {
                 ClientMessage::Register { username, password } => {
-                    {
-                        let mut users = user_state.lock().await;
-                        println!("[DEBUG] Users before registration: {:?}", users);
-                        // *** FIX 2: Hold the lock guard in a `let` binding. ***
-                        if users.iter().any(|u| u.username == username) {
-                            let peers = peer_map.lock().await;
-                            let tx = &peers.get(&conn_id).unwrap().tx;
-                            tx.send(ServerMessage::AuthFailure("Username taken.".into())).unwrap();
-                            continue;
-                        } else {
-                            let new_user_profile = UserProfile {
-                                id: Uuid::new_v4(),
-                                username: username.clone(),
-                                hash: hash_password(&password).unwrap(),
-                                color: Color::Green,
-                                role: if users.is_empty() {
-                                    UserRole::Admin
-                                } else {
-                                    UserRole::User
-                                },
-                            };
-                            users.push(new_user_profile.clone());
-                            println!("[DEBUG] Users after registration: {:?}", users);
-                        }
-                    } // lock released here
-                    println!("[DEBUG] Attempting to save to {}", USER_DATA_PATH);
-                    if let Err(e) = save_data(USER_DATA_PATH, &user_state).await {
-                        println!("[ERROR] Failed to save users: {}", e);
-                    } else {
-                        println!("[DEBUG] Successfully saved users to {}", USER_DATA_PATH);
-                    }
-                    // Send AuthSuccess after saving
-                    let users = user_state.lock().await;
-                    let new_user_profile = users.iter().find(|u| u.username == username).unwrap().clone();
-                    let user_data = User {
-                        id: new_user_profile.id,
-                        username: new_user_profile.username,
-                        color: new_user_profile.color,
-                        role: new_user_profile.role,
+                    // Use SQLite for registration
+                    let is_first_user = {
+                        let conn = Connection::open(DB_PATH).unwrap();
+                        let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0)).unwrap();
+                        count == 0
                     };
-                    current_user = Some(user_data.clone());
-                    peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
-                    let peers = peer_map.lock().await;
-                    let tx = &peers.get(&conn_id).unwrap().tx;
-                    tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
-                }
-                ClientMessage::Login { username, password } => {
-                    // Lock user_state, get profile, drop lock
-                    let profile = {
-                        let users = user_state.lock().await;
-                        users.iter().find(|u| u.username == username).cloned()
-                    };
-
-                    if let Some(profile) = profile {
-                        println!("[DEBUG] Attempting login for username: {}", username);
-                        println!("[DEBUG] Provided password: {}", password);
-                        println!("[DEBUG] Stored hash: {}", profile.hash);
-                        let verify = verify_password(&profile.hash, &password);
-                        println!("[DEBUG] verify_password result: {}", verify);
-                        if verify {
+                    let role = if is_first_user { "Admin" } else { "User" };
+                    match db_register_user(&username, &password, "Green", role).await {
+                        Ok(profile) => {
                             let user_data = User {
                                 id: profile.id,
                                 username: profile.username.clone(),
@@ -298,45 +287,44 @@ async fn handle_connection(
                                 role: profile.role.clone(),
                             };
                             current_user = Some(user_data.clone());
-
-                            // Lock peer_map, update peer, get tx, drop lock
+                            peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::AuthFailure(e)).unwrap();
+                        }
+                    }
+                }
+                ClientMessage::Login { username, password } => {
+                    match db_login_user(&username, &password).await {
+                        Ok(profile) => {
+                            let user_data = User {
+                                id: profile.id,
+                                username: profile.username.clone(),
+                                color: profile.color,
+                                role: profile.role.clone(),
+                            };
+                            current_user = Some(user_data.clone());
                             let tx = {
                                 let mut peers = peer_map.lock().await;
                                 if let Some(peer) = peers.get_mut(&conn_id) {
                                     peer.user_id = Some(user_data.id);
-                                    println!("[DEBUG] Updated peer_map for user: {}", user_data.username);
                                     peer.tx.clone()
                                 } else {
-                                    println!("[ERROR] Failed to find peer for conn_id: {}", conn_id);
                                     continue;
                                 }
                             };
-
-                            println!("[DEBUG] About to send AuthSuccess for user: {}", user_data.username);
-                            match tx.send(ServerMessage::AuthSuccess(user_data.clone())) {
-                                Ok(_) => println!("[DEBUG] AuthSuccess sent for user: {}", user_data.username),
-                                Err(e) => println!("[ERROR] Failed to send AuthSuccess: {}", e),
-                            }
-                        } else {
-                            let tx = {
-                                let peers = peer_map.lock().await;
-                                peers.get(&conn_id).unwrap().tx.clone()
-                            };
-                            tx.send(ServerMessage::AuthFailure(
-                                "Invalid credentials.".into(),
-                            ))
-                            .unwrap();
+                            tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
                         }
-                    } else {
-                        println!("[DEBUG] Username not found: {}", username);
-                        let tx = {
+                        Err(e) => {
                             let peers = peer_map.lock().await;
-                            peers.get(&conn_id).unwrap().tx.clone()
-                        };
-                        tx.send(ServerMessage::AuthFailure(
-                            "Invalid credentials.".into(),
-                        ))
-                        .unwrap();
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            tx.send(ServerMessage::AuthFailure(e)).unwrap();
+                        }
                     }
                 }
                 _ => {} // Ignore authenticated messages
@@ -356,4 +344,346 @@ async fn broadcast(peer_map: &PeerMap, msg: &ServerMessage) {
             let _ = peer.tx.send(msg.clone());
         }
     }
+}
+
+fn init_db() -> SqlResult<Connection> {
+    let conn = Connection::open(DB_PATH)?;
+    // Users
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS users (
+            id TEXT PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            color TEXT NOT NULL,
+            role TEXT NOT NULL
+        )",
+        [],
+    )?;
+    // Forums
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS forums (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL
+        )",
+        [],
+    )?;
+    // Threads
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS threads (
+            id TEXT PRIMARY KEY,
+            forum_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            FOREIGN KEY(forum_id) REFERENCES forums(id),
+            FOREIGN KEY(author_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    // Posts
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS posts (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES threads(id),
+            FOREIGN KEY(author_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    Ok(conn)
+}
+
+// --- SQLite User Management ---
+
+async fn db_register_user(username: &str, password: &str, color: &str, role: &str) -> Result<UserProfile, String> {
+    let username = username.to_string();
+    let password = password.to_string();
+    let color = color.to_string();
+    let role = role.to_string();
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        // Check if username exists
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM users WHERE username = ?1").map_err(|e| e.to_string())?;
+        let exists: i64 = stmt.query_row(params![username], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if exists > 0 {
+            return Err("Username taken".to_string());
+        }
+        let id = Uuid::new_v4();
+        let hash = hash_password(&password).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash, color, role) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id.to_string(), username, hash, color, role],
+        ).map_err(|e| e.to_string())?;
+        Ok(UserProfile {
+            id,
+            username,
+            hash,
+            color: Color::Green, // TODO: parse color string if needed
+            role: match role.as_str() {
+                "Admin" => UserRole::Admin,
+                "Moderator" => UserRole::Moderator,
+                _ => UserRole::User,
+            },
+        })
+    }).await.unwrap()
+}
+
+async fn db_login_user(username: &str, password: &str) -> Result<UserProfile, String> {
+    let username = username.to_string();
+    let password = password.to_string();
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id, username, password_hash, color, role FROM users WHERE username = ?1").map_err(|e| e.to_string())?;
+        let user = stmt.query_row(params![username], |row| {
+            let id: String = row.get(0)?;
+            let username: String = row.get(1)?;
+            let hash: String = row.get(2)?;
+            let color: String = row.get(3)?;
+            let role: String = row.get(4)?;
+            Ok((id, username, hash, color, role))
+        }).map_err(|_| "Invalid credentials".to_string())?;
+        if !verify_password(&user.2, &password) {
+            return Err("Invalid credentials".to_string());
+        }
+        Ok(UserProfile {
+            id: Uuid::parse_str(&user.0).unwrap(),
+            username: user.1,
+            hash: user.2,
+            color: Color::Green, // TODO: parse color string if needed
+            role: match user.4.as_str() {
+                "Admin" => UserRole::Admin,
+                "Moderator" => UserRole::Moderator,
+                _ => UserRole::User,
+            },
+        })
+    }).await.unwrap()
+}
+
+async fn db_update_user_password(user_id: Uuid, new_password: &str) -> Result<(), String> {
+    let user_id = user_id.to_string();
+    let new_password = new_password.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let hash = hash_password(&new_password).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            params![hash, user_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
+async fn db_update_user_color(user_id: Uuid, color: &str) -> Result<(), String> {
+    let user_id = user_id.to_string();
+    let color = color.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE users SET color = ?1 WHERE id = ?2",
+            params![color, user_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
+// --- SQLite Forum/Thread/Post Management ---
+
+async fn db_get_forums() -> Result<Vec<Forum>, String> {
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut forums = Vec::new();
+        let mut stmt = conn.prepare("SELECT id, name, description FROM forums").map_err(|e| e.to_string())?;
+        let forum_rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        }).map_err(|e| e.to_string())?;
+        for forum_row in forum_rows {
+            let (forum_id, name, description) = forum_row.map_err(|e| e.to_string())?;
+            let forum_uuid = Uuid::parse_str(&forum_id).map_err(|e| e.to_string())?;
+            // Get threads for this forum
+            let mut thread_stmt = conn.prepare("SELECT id, title, author_id FROM threads WHERE forum_id = ?1").map_err(|e| e.to_string())?;
+            let thread_rows = thread_stmt.query_map(params![forum_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            }).map_err(|e| e.to_string())?;
+            let mut threads = Vec::new();
+            for thread_row in thread_rows {
+                let (thread_id, title, author_id) = thread_row.map_err(|e| e.to_string())?;
+                let thread_uuid = Uuid::parse_str(&thread_id).map_err(|e| e.to_string())?;
+                // Get author user
+                let mut user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+                let user_row = user_stmt.query_row(params![author_id.clone()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+                }).map_err(|e| e.to_string())?;
+                let (user_id, username, color, role) = user_row;
+                let author = User {
+                    id: Uuid::parse_str(&user_id).unwrap(),
+                    username,
+                    color: Color::Green, // TODO: parse color string
+                    role: match role.as_str() {
+                        "Admin" => UserRole::Admin,
+                        "Moderator" => UserRole::Moderator,
+                        _ => UserRole::User,
+                    },
+                };
+                // Get posts for this thread
+                let mut post_stmt = conn.prepare("SELECT id, author_id, content FROM posts WHERE thread_id = ?1").map_err(|e| e.to_string())?;
+                let post_rows = post_stmt.query_map(params![thread_id.clone()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                }).map_err(|e| e.to_string())?;
+                let mut posts = Vec::new();
+                for post_row in post_rows {
+                    let (post_id, post_author_id, content) = post_row.map_err(|e| e.to_string())?;
+                    // Get post author
+                    let mut post_user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+                    let post_user_row = post_user_stmt.query_row(params![post_author_id.clone()], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+                    }).map_err(|e| e.to_string())?;
+                    let (puser_id, pusername, pcolor, prole) = post_user_row;
+                    let post_author = User {
+                        id: Uuid::parse_str(&puser_id).unwrap(),
+                        username: pusername,
+                        color: Color::Green, // TODO: parse color string
+                        role: match prole.as_str() {
+                            "Admin" => UserRole::Admin,
+                            "Moderator" => UserRole::Moderator,
+                            _ => UserRole::User,
+                        },
+                    };
+                    posts.push(Post {
+                        id: Uuid::parse_str(&post_id).unwrap(),
+                        author: post_author,
+                        content,
+                    });
+                }
+                threads.push(Thread {
+                    id: thread_uuid,
+                    title,
+                    author,
+                    posts,
+                });
+            }
+            forums.push(Forum {
+                id: forum_uuid,
+                name,
+                description,
+                threads,
+            });
+        }
+        Ok(forums)
+    }).await.unwrap()
+}
+
+async fn db_create_thread(forum_id: Uuid, title: &str, author_id: Uuid, content: &str) -> Result<(), String> {
+    let forum_id = forum_id.to_string();
+    let title = title.to_string();
+    let author_id = author_id.to_string();
+    let content = content.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let thread_id = Uuid::new_v4().to_string();
+        let post_id = Uuid::new_v4().to_string();
+        // Insert thread
+        conn.execute(
+            "INSERT INTO threads (id, forum_id, title, author_id) VALUES (?1, ?2, ?3, ?4)",
+            params![thread_id, forum_id, title, author_id],
+        ).map_err(|e| e.to_string())?;
+        // Insert first post
+        conn.execute(
+            "INSERT INTO posts (id, thread_id, author_id, content) VALUES (?1, ?2, ?3, ?4)",
+            params![post_id, thread_id, author_id, content],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
+async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> Result<(), String> {
+    let thread_id = thread_id.to_string();
+    let author_id = author_id.to_string();
+    let content = content.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let post_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO posts (id, thread_id, author_id, content) VALUES (?1, ?2, ?3, ?4)",
+            params![post_id, thread_id, author_id, content],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
+async fn migrate_forums_json_to_db() -> Result<(), Box<dyn Error>> {
+    if !Path::new(FORUM_DATA_PATH).exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(DB_PATH)?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM forums", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(()); // Already migrated
+    }
+    let data = std::fs::read_to_string(FORUM_DATA_PATH)?;
+    let forums: Vec<Forum> = serde_json::from_str(&data)?;
+    use std::collections::HashSet;
+    let mut user_set = HashSet::new();
+    // Collect all unique users from threads and posts
+    for forum in &forums {
+        for thread in &forum.threads {
+            user_set.insert((&thread.author.id, &thread.author.username, &thread.author.color, &thread.author.role));
+            for post in &thread.posts {
+                user_set.insert((&post.author.id, &post.author.username, &post.author.color, &post.author.role));
+            }
+        }
+    }
+    // Insert all users first
+    for (id, username, color, role) in user_set {
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, username, password_hash, color, role) VALUES (?1, ?2, '', ?3, ?4)",
+            params![id.to_string(), username, format!("{:?}", color), format!("{:?}", role)],
+        )?;
+    }
+    // Now insert forums, threads, posts
+    for forum in forums {
+        conn.execute(
+            "INSERT INTO forums (id, name, description) VALUES (?1, ?2, ?3)",
+            params![forum.id.to_string(), forum.name, forum.description],
+        )?;
+        for thread in forum.threads {
+            conn.execute(
+                "INSERT INTO threads (id, forum_id, title, author_id) VALUES (?1, ?2, ?3, ?4)",
+                params![thread.id.to_string(), forum.id.to_string(), thread.title, thread.author.id.to_string()],
+            )?;
+            for post in thread.posts {
+                conn.execute(
+                    "INSERT INTO posts (id, thread_id, author_id, content) VALUES (?1, ?2, ?3, ?4)",
+                    params![post.id.to_string(), thread.id.to_string(), post.author.id.to_string(), post.content],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn migrate_users_json_to_db() -> Result<(), Box<dyn Error>> {
+    if !Path::new(USER_DATA_PATH).exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(DB_PATH)?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
+    if count > 0 {
+        return Ok(()); // Already migrated
+    }
+    let data = std::fs::read_to_string(USER_DATA_PATH)?;
+    let users: Vec<serde_json::Value> = serde_json::from_str(&data)?;
+    for user in users {
+        let id = user["id"].as_str().unwrap();
+        let username = user["username"].as_str().unwrap();
+        let hash = user["password_hash"].as_str().unwrap();
+        let color = user["color"].as_str().unwrap();
+        let role = user["role"].as_str().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, username, password_hash, color, role) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, username, hash, color, role],
+        )?;
+    }
+    Ok(())
 }
