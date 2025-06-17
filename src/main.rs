@@ -11,7 +11,7 @@ use common::{
 use futures::{SinkExt, StreamExt};
 use ratatui::style::Color;
 use rusqlite::{params, Connection, Result as SqlResult};
-use std::{collections::HashMap, env, error::Error, path::Path, sync::Arc};
+use std::{collections::HashMap, env, error::Error, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, Mutex},
@@ -21,8 +21,6 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{error, info};
 use uuid::Uuid;
 
-const FORUM_DATA_PATH: &str = "forums.json";
-const USER_DATA_PATH: &str = "users.json";
 const DB_PATH: &str = "cyberpunk_bbs.db";
 
 struct Peer {
@@ -358,6 +356,34 @@ async fn handle_connection(
                         }
                         Err(e) => {
                             let _ = tx.send(ServerMessage::Notification(format!("Failed to load servers: {}", e), true));
+                        }
+                    }
+                }
+                ClientMessage::SendChannelMessage { channel_id, content } => {
+                    let now = chrono::Utc::now().timestamp();
+                    match db_create_channel_message(channel_id, user.id, now, &content).await {
+                        Ok(msg_id) => {
+                            let channel_msg = ChannelMessage {
+                                id: msg_id,
+                                channel_id,
+                                sent_by: user.id,
+                                timestamp: now,
+                                content: content.clone(),
+                            };
+                            // Broadcast only to users in the channel
+                            let peers = peer_map.lock().await;
+                            for peer in peers.values() {
+                                if let Some(uid) = peer.user_id {
+                                    // TODO: Optimize: Only send to users in the channel
+                                    // For now, send to all users
+                                    let _ = peer.tx.send(ServerMessage::NewChannelMessage(channel_msg.clone()));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to send channel message: {}", e), true));
                         }
                     }
                 }
@@ -1030,7 +1056,7 @@ async fn db_create_channel(
     name: &str,
     description: &str,
 ) -> Result<Uuid, String> {
-    let server_id = server_id.to_string();
+    let server_id_str = server_id.to_string();
     let name = name.to_string();
     let description = description.to_string();
     tokio::task::spawn_blocking(move || {
@@ -1038,8 +1064,18 @@ async fn db_create_channel(
         let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO channels (id, server_id, name, description) VALUES (?1, ?2, ?3, ?4)",
-            params![id.to_string(), server_id, name, description],
+            params![id.to_string(), server_id_str, name, description],
         ).map_err(|e| e.to_string())?;
+        // Add all server members to channel_users
+        let mut stmt = conn.prepare("SELECT user_id FROM server_users WHERE server_id = ?1").map_err(|e| e.to_string())?;
+        let user_rows = stmt.query_map(params![server_id_str.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        for user_row in user_rows {
+            let user_id = user_row.map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO channel_users (channel_id, user_id) VALUES (?1, ?2)",
+                params![id.to_string(), user_id],
+            ).ok();
+        }
         Ok(id)
     }).await.unwrap()
 }
@@ -1062,82 +1098,6 @@ async fn db_create_channel_message(
         ).map_err(|e| e.to_string())?;
         Ok(id)
     }).await.unwrap()
-}
-
-async fn migrate_forums_json_to_db() -> Result<(), Box<dyn Error>> {
-    if !Path::new(FORUM_DATA_PATH).exists() {
-        return Ok(());
-    }
-    let conn = Connection::open(DB_PATH)?;
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM forums", [], |row| row.get(0))?;
-    if count > 0 {
-        return Ok(()); // Already migrated
-    }
-    let data = std::fs::read_to_string(FORUM_DATA_PATH)?;
-    let forums: Vec<Forum> = serde_json::from_str(&data)?;
-    use std::collections::HashSet;
-    let mut user_set = HashSet::new();
-    // Collect all unique users from threads and posts
-    for forum in &forums {
-        for thread in &forum.threads {
-            user_set.insert((&thread.author.id, &thread.author.username, &thread.author.color, &thread.author.role));
-            for post in &thread.posts {
-                user_set.insert((&post.author.id, &post.author.username, &post.author.color, &post.author.role));
-            }
-        }
-    }
-    // Insert all users first
-    for (id, username, color, role) in user_set {
-        conn.execute(
-            "INSERT OR IGNORE INTO users (id, username, password_hash, color, role) VALUES (?1, ?2, '', ?3, ?4)",
-            params![id.to_string(), username, format!("{:?}", color), format!("{:?}", role)],
-        )?;
-    }
-    // Now insert forums, threads, posts
-    for forum in forums {
-        conn.execute(
-            "INSERT INTO forums (id, name, description) VALUES (?1, ?2, ?3)",
-            params![forum.id.to_string(), forum.name, forum.description],
-        )?;
-        for thread in forum.threads {
-            conn.execute(
-                "INSERT INTO threads (id, forum_id, title, author_id) VALUES (?1, ?2, ?3, ?4)",
-                params![thread.id.to_string(), forum.id.to_string(), thread.title, thread.author.id.to_string()],
-            )?;
-            for post in thread.posts {
-                conn.execute(
-                    "INSERT INTO posts (id, thread_id, author_id, content) VALUES (?1, ?2, ?3, ?4)",
-                    params![post.id.to_string(), thread.id.to_string(), post.author.id.to_string(), post.content],
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn migrate_users_json_to_db() -> Result<(), Box<dyn Error>> {
-    if !Path::new(USER_DATA_PATH).exists() {
-        return Ok(());
-    }
-    let conn = Connection::open(DB_PATH)?;
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?;
-    if count > 0 {
-        return Ok(()); // Already migrated
-    }
-    let data = std::fs::read_to_string(USER_DATA_PATH)?;
-    let users: Vec<serde_json::Value> = serde_json::from_str(&data)?;
-    for user in users {
-        let id = user["id"].as_str().unwrap();
-        let username = user["username"].as_str().unwrap();
-        let hash = user["password_hash"].as_str().unwrap();
-        let color = user["color"].as_str().unwrap();
-        let role = user["role"].as_str().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO users (id, username, password_hash, color, role) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, username, hash, color, role],
-        )?;
-    }
-    Ok(())
 }
 
 fn parse_color(color_str: &str) -> Color {
