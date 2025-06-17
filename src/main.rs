@@ -200,10 +200,54 @@ async fn handle_connection(
                 ClientMessage::SendChatMessage(content) => {
                     let chat_msg = ServerMessage::NewChatMessage(ChatMessage {
                         author: user.username.clone(),
-                        content,
+                        content: content.clone(),
                         color: user.color,
                     });
                     broadcast(&peer_map, &chat_msg).await;
+                    // --- Mention logic ---
+                    let mentioned = extract_mentions(&content);
+                    if !mentioned.is_empty() {
+                        let peers = peer_map.lock().await;
+                        for username in mentioned {
+                            if let Some((_, peer)) = peers.iter().find(|(_, p)| {
+                                if let Some(uid) = p.user_id {
+                                    if let Ok(profile) = futures::executor::block_on(db_get_user_by_id(uid)) {
+                                        profile.username == username
+                                    } else { false }
+                                } else { false }
+                            }) {
+                                if let Some(uid) = peer.user_id {
+                                    if let Ok(profile) = db_get_user_by_id(uid).await {
+                                        let from_user = user.clone();
+                                        let tx = &peer.tx;
+                                        let _ = tx.send(ServerMessage::MentionNotification {
+                                            from: from_user,
+                                            content: content.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                ClientMessage::SendDirectMessage { to, content } => {
+                    // Store DM in DB
+                    let from_user = user.clone();
+                    let to_user_id = to;
+                    let now = chrono::Utc::now().timestamp();
+                    let _ = db_store_direct_message(user.id, to_user_id, &content, now).await;
+                    // Send DM to recipient if online
+                    let peers = peer_map.lock().await;
+                    for peer in peers.values() {
+                        if let Some(uid) = peer.user_id {
+                            if uid == to_user_id {
+                                let _ = peer.tx.send(ServerMessage::DirectMessage {
+                                    from: from_user.clone(),
+                                    content: content.clone(),
+                                });
+                            }
+                        }
+                    }
                 }
                 ClientMessage::CreateThread {
                     forum_id,
@@ -389,6 +433,19 @@ fn init_db() -> SqlResult<Connection> {
             content TEXT NOT NULL,
             FOREIGN KEY(thread_id) REFERENCES threads(id),
             FOREIGN KEY(author_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    // Direct Messages
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS direct_messages (
+            id TEXT PRIMARY KEY,
+            from_user_id TEXT NOT NULL,
+            to_user_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            FOREIGN KEY(from_user_id) REFERENCES users(id),
+            FOREIGN KEY(to_user_id) REFERENCES users(id)
         )",
         [],
     )?;
@@ -736,4 +793,32 @@ fn parse_color(color_str: &str) -> Color {
         "White" => Color::White,
         _ => Color::Reset,
     }
+}
+
+// --- Mention extraction helper ---
+fn extract_mentions(content: &str) -> Vec<String> {
+    let mut mentions = Vec::new();
+    let re = regex::Regex::new(r"@([a-zA-Z0-9_]+)").unwrap();
+    for cap in re.captures_iter(content) {
+        if let Some(username) = cap.get(1) {
+            mentions.push(username.as_str().to_string());
+        }
+    }
+    mentions
+}
+
+// --- Store direct message in DB ---
+async fn db_store_direct_message(from_user_id: Uuid, to_user_id: Uuid, content: &str, timestamp: i64) -> Result<(), String> {
+    let from_user_id = from_user_id.to_string();
+    let to_user_id = to_user_id.to_string();
+    let content = content.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO direct_messages (id, from_user_id, to_user_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, from_user_id, to_user_id, content, timestamp],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
 }
