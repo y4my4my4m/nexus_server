@@ -303,6 +303,36 @@ async fn handle_connection(
                     let tx = &peers.get(&conn_id).unwrap().tx;
                     tx.send(ServerMessage::UserList(users)).unwrap();
                 },
+                ClientMessage::UpdateProfile { bio, url1, url2, url3, location, profile_pic, cover_banner } => {
+                    match db_update_user_profile(user.id, bio, url1, url2, url3, location, profile_pic, cover_banner).await {
+                        Ok(()) => {
+                            if let Ok(profile) = db_get_user_profile(user.id).await {
+                                let peers = peer_map.lock().await;
+                                let tx = &peers.get(&conn_id).unwrap().tx;
+                                let _ = tx.send(ServerMessage::Profile(profile));
+                            }
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Profile update failed: {}", e), true));
+                        }
+                    }
+                }
+                ClientMessage::GetProfile { user_id } => {
+                    match db_get_user_profile(user_id).await {
+                        Ok(profile) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Profile(profile));
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Profile fetch failed: {}", e), true));
+                        }
+                    }
+                }
                 _ => {} // Ignore other messages when logged in
             }
         } else { // Not logged in
@@ -403,6 +433,25 @@ fn init_db() -> SqlResult<Connection> {
         )",
         [],
     )?;
+    // --- MIGRATION: Add missing profile columns if not present ---
+    let columns = [
+        ("bio", "TEXT"),
+        ("url1", "TEXT"),
+        ("url2", "TEXT"),
+        ("url3", "TEXT"),
+        ("location", "TEXT"),
+        ("profile_pic", "TEXT"),
+        ("cover_banner", "TEXT"),
+    ];
+    for (col, ty) in columns.iter() {
+        let sql = format!("ALTER TABLE users ADD COLUMN {} {}", col, ty);
+        let res = conn.execute(&sql, []);
+        if let Err(e) = res {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(e);
+            }
+        }
+    }
     // Forums
     conn.execute(
         "CREATE TABLE IF NOT EXISTS forums (
@@ -477,6 +526,13 @@ async fn db_get_user_by_id(user_id: Uuid) -> Result<UserProfile, String> {
                 "Moderator" => UserRole::Moderator,
                 _ => UserRole::User,
             },
+            bio: None,
+            url1: None,
+            url2: None,
+            url3: None,
+            location: None,
+            profile_pic: None,
+            cover_banner: None,
         })
     }).await.unwrap()
 }
@@ -510,6 +566,13 @@ async fn db_register_user(username: &str, password: &str, color: &str, role: &st
                 "Moderator" => UserRole::Moderator,
                 _ => UserRole::User,
             },
+            bio: None,
+            url1: None,
+            url2: None,
+            url3: None,
+            location: None,
+            profile_pic: None,
+            cover_banner: None,
         })
     }).await.unwrap()
 }
@@ -541,6 +604,13 @@ async fn db_login_user(username: &str, password: &str) -> Result<UserProfile, St
                 "Moderator" => UserRole::Moderator,
                 _ => UserRole::User,
             },
+            bio: None,
+            url1: None,
+            url2: None,
+            url3: None,
+            location: None,
+            profile_pic: None,
+            cover_banner: None,
         })
     }).await.unwrap()
 }
@@ -569,6 +639,105 @@ async fn db_update_user_color(user_id: Uuid, color: &str) -> Result<(), String> 
             params![color, user_id],
         ).map_err(|e| e.to_string())?;
         Ok(())
+    }).await.unwrap()
+}
+
+fn validate_profile_fields(
+    bio: &Option<String>,
+    url1: &Option<String>,
+    url2: &Option<String>,
+    url3: &Option<String>,
+    location: &Option<String>,
+    profile_pic: &Option<String>,
+    cover_banner: &Option<String>,
+) -> Result<(), String> {
+    if let Some(bio) = bio {
+        if bio.len() > 5000 {
+            return Err("Bio must be at most 5000 characters.".to_string());
+        }
+    }
+    for (i, url) in [url1, url2, url3].iter().enumerate() {
+        if let Some(u) = url {
+            if u.len() > 100 {
+                return Err(format!("URL{} must be at most 100 characters.", i + 1));
+            }
+        }
+    }
+    if let Some(loc) = location {
+        if loc.len() > 100 {
+            return Err("Location must be at most 100 characters.".to_string());
+        }
+    }
+    if let Some(pic) = profile_pic {
+        if pic.len() > 1024 * 1024 {
+            return Err("Profile picture must be at most 1MB (base64 or URL).".to_string());
+        }
+    }
+    if let Some(banner) = cover_banner {
+        if banner.len() > 1024 * 1024 {
+            return Err("Cover banner must be at most 1MB (base64 or URL).".to_string());
+        }
+    }
+    Ok(())
+}
+
+async fn db_update_user_profile(user_id: Uuid, bio: Option<String>, url1: Option<String>, url2: Option<String>, url3: Option<String>, location: Option<String>, profile_pic: Option<String>, cover_banner: Option<String>) -> Result<(), String> {
+    validate_profile_fields(&bio, &url1, &url2, &url3, &location, &profile_pic, &cover_banner)?;
+    let user_id = user_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut query = "UPDATE users SET ".to_string();
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        let mut set_fields = Vec::new();
+        if let Some(bio) = &bio { set_fields.push("bio = ?"); params.push(bio as &dyn rusqlite::ToSql); }
+        if let Some(url1) = &url1 { set_fields.push("url1 = ?"); params.push(url1 as &dyn rusqlite::ToSql); }
+        if let Some(url2) = &url2 { set_fields.push("url2 = ?"); params.push(url2 as &dyn rusqlite::ToSql); }
+        if let Some(url3) = &url3 { set_fields.push("url3 = ?"); params.push(url3 as &dyn rusqlite::ToSql); }
+        if let Some(location) = &location { set_fields.push("location = ?"); params.push(location as &dyn rusqlite::ToSql); }
+        if let Some(profile_pic) = &profile_pic { set_fields.push("profile_pic = ?"); params.push(profile_pic as &dyn rusqlite::ToSql); }
+        if let Some(cover_banner) = &cover_banner { set_fields.push("cover_banner = ?"); params.push(cover_banner as &dyn rusqlite::ToSql); }
+        if set_fields.is_empty() {
+            return Ok(());
+        }
+        query.push_str(&set_fields.join(", "));
+        query.push_str(" WHERE id = ?");
+        params.push(&user_id as &dyn rusqlite::ToSql);
+        conn.execute(&query, &params[..]).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
+async fn db_get_user_profile(user_id: Uuid) -> Result<UserProfile, String> {
+    let user_id = user_id.to_string();
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id, username, bio, url1, url2, url3, location, profile_pic, cover_banner FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+        let user = stmt.query_row(params![user_id], |row| {
+            let id: String = row.get(0)?;
+            let username: String = row.get(1)?;
+            let bio: Option<String> = row.get(2)?;
+            let url1: Option<String> = row.get(3)?;
+            let url2: Option<String> = row.get(4)?;
+            let url3: Option<String> = row.get(5)?;
+            let location: Option<String> = row.get(6)?;
+            let profile_pic: Option<String> = row.get(7)?;
+            let cover_banner: Option<String> = row.get(8)?;
+            Ok((id, username, bio, url1, url2, url3, location, profile_pic, cover_banner))
+        }).map_err(|_| "User not found".to_string())?;
+        Ok(UserProfile {
+            id: Uuid::parse_str(&user.0).unwrap(),
+            username: user.1,
+            hash: "".to_string(), // Hash is not fetched for profile view
+            color: Color::Reset, // Color is not fetched for profile view
+            role: UserRole::User, // Role is not fetched for profile view
+            bio: user.2,
+            url1: user.3,
+            url2: user.4,
+            url3: user.5,
+            location: user.6,
+            profile_pic: user.7,
+            cover_banner: user.8,
+        })
     }).await.unwrap()
 }
 
