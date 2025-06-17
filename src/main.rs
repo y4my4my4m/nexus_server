@@ -162,7 +162,6 @@ async fn handle_connection(
                                     let peers = peer_map.lock().await;
                                     let tx = &peers.get(&conn_id).unwrap().tx;
                                     // Notify client with updated user info
-                                    tx.send(ServerMessage::AuthSuccess(current_user.as_ref().unwrap().clone())).unwrap();
                                     tx.send(ServerMessage::Notification("Color updated.".into(), false)).unwrap();
                                 }
                                 Err(e) => {
