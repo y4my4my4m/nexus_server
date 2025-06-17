@@ -372,11 +372,20 @@ async fn handle_connection(
                             };
                             // Broadcast only to users in the channel
                             let peers = peer_map.lock().await;
-                            for peer in peers.values() {
+                            // Fetch channel userlist from DB
+                            let channel_userlist = {
+                                let conn = Connection::open(DB_PATH).unwrap();
+                                let mut stmt = conn.prepare("SELECT user_id FROM channel_users WHERE channel_id = ?1").unwrap();
+                                stmt.query_map(params![channel_id.to_string()], |row| row.get::<_, String>(0))
+                                    .unwrap()
+                                    .map(|r| Uuid::parse_str(&r.unwrap()).unwrap())
+                                    .collect::<Vec<Uuid>>()
+                            };
+                            for (peer_id, peer) in peers.iter() {
                                 if let Some(uid) = peer.user_id {
-                                    // TODO: Optimize: Only send to users in the channel
-                                    // For now, send to all users
-                                    let _ = peer.tx.send(ServerMessage::NewChannelMessage(channel_msg.clone()));
+                                    if channel_userlist.contains(&uid) {
+                                        let _ = peer.tx.send(ServerMessage::NewChannelMessage(channel_msg.clone()));
+                                    }
                                 }
                             }
                         }
@@ -386,6 +395,32 @@ async fn handle_connection(
                             let _ = tx.send(ServerMessage::Notification(format!("Failed to send channel message: {}", e), true));
                         }
                     }
+                }
+                ClientMessage::GetChannelMessages { channel_id } => {
+                    // Fetch last 50 messages for the channel
+                    let messages = {
+                        let conn = Connection::open(DB_PATH).unwrap();
+                        let mut stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp DESC LIMIT 50").unwrap();
+                        let rows = stmt.query_map(params![channel_id.to_string()], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+                        }).unwrap();
+                        let mut msgs = Vec::new();
+                        for row in rows {
+                            let (id, sent_by, timestamp, content) = row.unwrap();
+                            msgs.push(ChannelMessage {
+                                id: Uuid::parse_str(&id).unwrap(),
+                                channel_id,
+                                sent_by: Uuid::parse_str(&sent_by).unwrap(),
+                                timestamp,
+                                content,
+                            });
+                        }
+                        msgs.reverse(); // Oldest first
+                        msgs
+                    };
+                    let peers = peer_map.lock().await;
+                    let tx = &peers.get(&conn_id).unwrap().tx;
+                    let _ = tx.send(ServerMessage::ChannelMessages { channel_id, messages });
                 }
                 _ => {} // Ignore other messages when logged in
             }
