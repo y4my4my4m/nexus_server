@@ -363,12 +363,17 @@ async fn handle_connection(
                     let now = chrono::Utc::now().timestamp();
                     match db_create_channel_message(channel_id, user.id, now, &content).await {
                         Ok(msg_id) => {
+                            // Fetch author info for the message
+                            let author_profile = db_get_user_by_id(user.id).await.unwrap();
                             let channel_msg = ChannelMessage {
                                 id: msg_id,
                                 channel_id,
                                 sent_by: user.id,
                                 timestamp: now,
                                 content: content.clone(),
+                                author_username: author_profile.username,
+                                author_color: author_profile.color,
+                                author_profile_pic: author_profile.profile_pic,
                             };
                             // Broadcast only to users in the channel
                             let peers = peer_map.lock().await;
@@ -407,12 +412,17 @@ async fn handle_connection(
                         let mut msgs = Vec::new();
                         for row in rows {
                             let (id, sent_by, timestamp, content) = row.unwrap();
+                            let sent_by_uuid = Uuid::parse_str(&sent_by).unwrap();
+                            let author_profile = futures::executor::block_on(db_get_user_by_id(sent_by_uuid)).unwrap();
                             msgs.push(ChannelMessage {
                                 id: Uuid::parse_str(&id).unwrap(),
                                 channel_id,
-                                sent_by: Uuid::parse_str(&sent_by).unwrap(),
+                                sent_by: sent_by_uuid,
                                 timestamp,
                                 content,
+                                author_username: author_profile.username,
+                                author_color: author_profile.color,
+                                author_profile_pic: author_profile.profile_pic,
                             });
                         }
                         msgs.reverse(); // Oldest first
@@ -1242,12 +1252,17 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
                 let mut messages = Vec::new();
                 for msg_row in msg_rows {
                     let (msg_id, sent_by, timestamp, content) = msg_row.map_err(|e| e.to_string())?;
+                    let sent_by_uuid = Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?;
+                    let author_profile = futures::executor::block_on(db_get_user_by_id(sent_by_uuid)).map_err(|e| e.to_string())?;
                     messages.push(common::ChannelMessage {
                         id: Uuid::parse_str(&msg_id).map_err(|e| e.to_string())?,
                         channel_id,
-                        sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
+                        sent_by: sent_by_uuid,
                         timestamp,
                         content,
+                        author_username: author_profile.username,
+                        author_color: author_profile.color,
+                        author_profile_pic: author_profile.profile_pic,
                     });
                 }
                 channels.push(Channel {
