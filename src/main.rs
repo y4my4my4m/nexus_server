@@ -46,10 +46,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Initialize the database
     let _conn = init_db()?;
-
-    // Migrate forums from JSON file to DB if needed
-    migrate_forums_json_to_db().await?;
-    migrate_users_json_to_db().await?;
+    // Ensure default server and channels exist
+    ensure_default_server_exists().await.map_err(|e| format!("Failed to create default server: {}", e))?;
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -350,6 +348,19 @@ async fn handle_connection(
                         }
                     }
                 }
+                ClientMessage::GetServers => {
+                    let servers = db_get_user_servers(user.id).await;
+                    let peers = peer_map.lock().await;
+                    let tx = &peers.get(&conn_id).unwrap().tx;
+                    match servers {
+                        Ok(servers) => {
+                            let _ = tx.send(ServerMessage::Servers(servers));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to load servers: {}", e), true));
+                        }
+                    }
+                }
                 _ => {} // Ignore other messages when logged in
             }
         } else { // Not logged in
@@ -516,6 +527,85 @@ fn init_db() -> SqlResult<Connection> {
             timestamp INTEGER NOT NULL,
             FOREIGN KEY(from_user_id) REFERENCES users(id),
             FOREIGN KEY(to_user_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    // --- SERVERS/CHANNELS/CHANNEL_MESSAGES ---
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS servers (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            public INTEGER NOT NULL,
+            invite_code TEXT,
+            icon TEXT,
+            banner TEXT,
+            owner TEXT NOT NULL,
+            FOREIGN KEY(owner) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS server_mods (
+            server_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            PRIMARY KEY(server_id, user_id),
+            FOREIGN KEY(server_id) REFERENCES servers(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS server_users (
+            server_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            PRIMARY KEY(server_id, user_id),
+            FOREIGN KEY(server_id) REFERENCES servers(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS channels (
+            id TEXT PRIMARY KEY,
+            server_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            FOREIGN KEY(server_id) REFERENCES servers(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS channel_users (
+            channel_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            PRIMARY KEY(channel_id, user_id),
+            FOREIGN KEY(channel_id) REFERENCES channels(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS channel_permissions (
+            channel_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            can_read INTEGER NOT NULL,
+            can_write INTEGER NOT NULL,
+            PRIMARY KEY(channel_id, user_id),
+            FOREIGN KEY(channel_id) REFERENCES channels(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS channel_messages (
+            id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            sent_by TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            FOREIGN KEY(channel_id) REFERENCES channels(id),
+            FOREIGN KEY(sent_by) REFERENCES users(id)
         )",
         [],
     )?;
@@ -898,6 +988,82 @@ async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> Resu
     }).await.unwrap()
 }
 
+// --- SQLite Server/Channel/Message Management ---
+
+use common::{Server, Channel, ChannelPermissions, ChannelMessage};
+
+async fn db_create_server(
+    name: &str,
+    description: &str,
+    public: bool,
+    owner: Uuid,
+    icon: Option<&str>,
+    banner: Option<&str>,
+) -> Result<Uuid, String> {
+    let name = name.to_string();
+    let description = description.to_string();
+    let icon = icon.map(|s| s.to_string());
+    let banner = banner.map(|s| s.to_string());
+    let owner = owner.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO servers (id, name, description, public, owner, icon, banner) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id.to_string(), name, description, public as i32, owner, icon, banner],
+        ).map_err(|e| e.to_string())?;
+        // Add owner to server_users and server_mods
+        conn.execute(
+            "INSERT INTO server_users (server_id, user_id) VALUES (?1, ?2)",
+            params![id.to_string(), owner],
+        ).map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO server_mods (server_id, user_id) VALUES (?1, ?2)",
+            params![id.to_string(), owner],
+        ).map_err(|e| e.to_string())?;
+        Ok(id)
+    }).await.unwrap()
+}
+
+async fn db_create_channel(
+    server_id: Uuid,
+    name: &str,
+    description: &str,
+) -> Result<Uuid, String> {
+    let server_id = server_id.to_string();
+    let name = name.to_string();
+    let description = description.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO channels (id, server_id, name, description) VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), server_id, name, description],
+        ).map_err(|e| e.to_string())?;
+        Ok(id)
+    }).await.unwrap()
+}
+
+async fn db_create_channel_message(
+    channel_id: Uuid,
+    sent_by: Uuid,
+    timestamp: i64,
+    content: &str,
+) -> Result<Uuid, String> {
+    let channel_id = channel_id.to_string();
+    let sent_by = sent_by.to_string();
+    let content = content.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO channel_messages (id, channel_id, sent_by, timestamp, content) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id.to_string(), channel_id, sent_by, timestamp, content],
+        ).map_err(|e| e.to_string())?;
+        Ok(id)
+    }).await.unwrap()
+}
+
 async fn migrate_forums_json_to_db() -> Result<(), Box<dyn Error>> {
     if !Path::new(FORUM_DATA_PATH).exists() {
         return Ok(());
@@ -1023,4 +1189,124 @@ async fn db_store_direct_message(from_user_id: Uuid, to_user_id: Uuid, content: 
         ).map_err(|e| e.to_string())?;
         Ok(())
     }).await.unwrap()
+}
+
+// Fetch all servers a user is a member of
+async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
+    use common::{Server, Channel};
+    let user_id = user_id.to_string();
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT s.id, s.name, s.description, s.public, s.invite_code, s.icon, s.banner, s.owner FROM servers s INNER JOIN server_users su ON s.id = su.server_id WHERE su.user_id = ?1").map_err(|e| e.to_string())?;
+        let server_rows = stmt.query_map(params![user_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?, row.get::<_, String>(7)?))
+        }).map_err(|e| e.to_string())?;
+        let mut servers = Vec::new();
+        for server_row in server_rows {
+            let (id, name, description, public, invite_code, icon, banner, owner) = server_row.map_err(|e| e.to_string())?;
+            let server_id = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+            // Fetch mods
+            let mut mods_stmt = conn.prepare("SELECT user_id FROM server_mods WHERE server_id = ?1").map_err(|e| e.to_string())?;
+            let mods = mods_stmt.query_map(params![id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
+                .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
+            // Fetch userlist
+            let mut users_stmt = conn.prepare("SELECT user_id FROM server_users WHERE server_id = ?1").map_err(|e| e.to_string())?;
+            let userlist = users_stmt.query_map(params![id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
+                .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
+            // Fetch channels
+            let mut channels_stmt = conn.prepare("SELECT id, name, description FROM channels WHERE server_id = ?1").map_err(|e| e.to_string())?;
+            let channel_rows = channels_stmt.query_map(params![id.clone()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            }).map_err(|e| e.to_string())?;
+            let mut channels = Vec::new();
+            for channel_row in channel_rows {
+                let (chan_id, chan_name, chan_desc) = channel_row.map_err(|e| e.to_string())?;
+                let channel_id = Uuid::parse_str(&chan_id).map_err(|e| e.to_string())?;
+                // Fetch channel userlist
+                let mut cu_stmt = conn.prepare("SELECT user_id FROM channel_users WHERE channel_id = ?1").map_err(|e| e.to_string())?;
+                let channel_userlist = cu_stmt.query_map(params![chan_id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
+                    .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
+                // Fetch permissions
+                let mut perm_stmt = conn.prepare("SELECT user_id, can_read, can_write FROM channel_permissions WHERE channel_id = ?1").map_err(|e| e.to_string())?;
+                let mut can_read = Vec::new();
+                let mut can_write = Vec::new();
+                let perm_rows = perm_stmt.query_map(params![chan_id.clone()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?, row.get::<_, i32>(2)?))
+                }).map_err(|e| e.to_string())?;
+                for perm_row in perm_rows {
+                    let (uid, read, write) = perm_row.map_err(|e| e.to_string())?;
+                    let uuid = Uuid::parse_str(&uid).map_err(|e| e.to_string())?;
+                    if read != 0 { can_read.push(uuid); }
+                    if write != 0 { can_write.push(uuid); }
+                }
+                // Fetch messages (last 50)
+                let mut msg_stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp DESC LIMIT 50").map_err(|e| e.to_string())?;
+                let msg_rows = msg_stmt.query_map(params![chan_id.clone()], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+                }).map_err(|e| e.to_string())?;
+                let mut messages = Vec::new();
+                for msg_row in msg_rows {
+                    let (msg_id, sent_by, timestamp, content) = msg_row.map_err(|e| e.to_string())?;
+                    messages.push(common::ChannelMessage {
+                        id: Uuid::parse_str(&msg_id).map_err(|e| e.to_string())?,
+                        channel_id,
+                        sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
+                        timestamp,
+                        content,
+                    });
+                }
+                channels.push(Channel {
+                    id: channel_id,
+                    server_id: server_id,
+                    name: chan_name,
+                    description: chan_desc,
+                    permissions: common::ChannelPermissions { can_read, can_write },
+                    userlist: channel_userlist,
+                    messages,
+                });
+            }
+            servers.push(Server {
+                id: server_id,
+                name,
+                description,
+                public: public != 0,
+                invite_code,
+                icon,
+                banner,
+                owner: Uuid::parse_str(&owner).map_err(|e| e.to_string())?,
+                mods,
+                userlist,
+                channels,
+            });
+        }
+        Ok(servers)
+    }).await.unwrap()
+}
+
+async fn ensure_default_server_exists() -> Result<(), String> {
+    use common::UserRole;
+    let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM servers", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    if count > 0 {
+        return Ok(());
+    }
+    // Get the first admin user as owner
+    let mut stmt = conn.prepare("SELECT id FROM users WHERE role = 'Admin' LIMIT 1").map_err(|e| e.to_string())?;
+    let owner_id: String = stmt.query_row([], |row| row.get(0)).map_err(|_| "No admin user found".to_string())?;
+    let owner_uuid = Uuid::parse_str(&owner_id).map_err(|e| e.to_string())?;
+    // drop(conn);
+    // Create server
+    let server_id = db_create_server(
+        "Nexus",
+        "The default community server.",
+        true,
+        owner_uuid,
+        None,
+        None,
+    ).await?;
+    // Create default channels
+    let _ = db_create_channel(server_id, "general", "General discussion").await?;
+    let _ = db_create_channel(server_id, "cyberdeck", "Tech talk").await?;
+    let _ = db_create_channel(server_id, "random", "Off-topic").await?;
+    Ok(())
 }
