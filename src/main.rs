@@ -11,15 +11,14 @@ use common::{
 use futures::{SinkExt, StreamExt};
 use ratatui::style::Color;
 use rusqlite::{params, Connection, Result as SqlResult};
-use serde::{de::DeserializeOwned, Serialize};
-use std::{collections::HashMap, env, error::Error, fs, path::Path, sync::Arc};
+use std::{collections::HashMap, env, error::Error, path::Path, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::{mpsc, Mutex},
 };
 use tokio::task;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 const FORUM_DATA_PATH: &str = "forums.json";
@@ -118,6 +117,10 @@ async fn handle_connection(
         if let Some(ref user) = current_user {
             match msg {
                 ClientMessage::Logout => {
+                    // Broadcast UserLeft before removing
+                    if let Some(ref user) = current_user {
+                        broadcast(&peer_map, &ServerMessage::UserLeft(user.id)).await;
+                    }
                     current_user = None;
                     peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = None;
                 }
@@ -238,6 +241,24 @@ async fn handle_connection(
                         }
                     }
                 }
+                ClientMessage::GetUserList => {
+                    let peers = peer_map.lock().await;
+                    let mut users = Vec::new();
+                    for peer in peers.values() {
+                        if let Some(uid) = peer.user_id {
+                            if let Ok(profile) = db_get_user_by_id(uid).await {
+                                users.push(User {
+                                    id: profile.id,
+                                    username: profile.username,
+                                    color: profile.color,
+                                    role: profile.role,
+                                });
+                            }
+                        }
+                    }
+                    let tx = &peers.get(&conn_id).unwrap().tx;
+                    tx.send(ServerMessage::UserList(users)).unwrap();
+                },
                 _ => {} // Ignore other messages when logged in
             }
         } else { // Not logged in
@@ -262,7 +283,10 @@ async fn handle_connection(
                             peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
                             let peers = peer_map.lock().await;
                             let tx = &peers.get(&conn_id).unwrap().tx;
-                            tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
+                            tx.send(ServerMessage::AuthSuccess(user_data.clone())).unwrap();
+                            // Broadcast UserJoined
+                            drop(peers); // unlock before broadcast
+                            broadcast(&peer_map, &ServerMessage::UserJoined(user_data)).await;
                         }
                         Err(e) => {
                             let peers = peer_map.lock().await;
@@ -290,7 +314,9 @@ async fn handle_connection(
                                     continue;
                                 }
                             };
-                            tx.send(ServerMessage::AuthSuccess(user_data)).unwrap();
+                            tx.send(ServerMessage::AuthSuccess(user_data.clone())).unwrap();
+                            // Broadcast UserJoined
+                            broadcast(&peer_map, &ServerMessage::UserJoined(user_data)).await;
                         }
                         Err(e) => {
                             let peers = peer_map.lock().await;
@@ -305,6 +331,8 @@ async fn handle_connection(
     }
     peer_map.lock().await.remove(&conn_id);
     if let Some(user) = current_user {
+        // Broadcast UserLeft on disconnect
+        broadcast(&peer_map, &ServerMessage::UserLeft(user.id)).await;
         info!("{} disconnected.", user.username);
     }
 }
