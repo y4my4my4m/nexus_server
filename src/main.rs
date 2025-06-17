@@ -218,7 +218,7 @@ async fn handle_connection(
                                 } else { false }
                             }) {
                                 if let Some(uid) = peer.user_id {
-                                    if let Ok(profile) = db_get_user_by_id(uid).await {
+                                    if let Ok(_profile) = db_get_user_by_id(uid).await {
                                         let from_user = user.clone();
                                         let tx = &peer.tx;
                                         let _ = tx.send(ServerMessage::MentionNotification {
@@ -312,7 +312,21 @@ async fn handle_connection(
                             if let Ok(profile) = db_get_user_profile(user.id).await {
                                 let peers = peer_map.lock().await;
                                 let tx = &peers.get(&conn_id).unwrap().tx;
-                                let _ = tx.send(ServerMessage::Profile(profile));
+                                let _ = tx.send(ServerMessage::Profile(profile.clone()));
+                                // Broadcast updated User to all clients
+                                if let Ok(updated_user) = db_get_user_by_id(user.id).await {
+                                    let user_struct = User {
+                                        id: updated_user.id,
+                                        username: updated_user.username,
+                                        color: updated_user.color,
+                                        role: updated_user.role,
+                                        profile_pic: updated_user.profile_pic.clone(),
+                                        cover_banner: updated_user.cover_banner.clone(),
+                                    };
+                                    for peer in peers.values() {
+                                        let _ = peer.tx.send(ServerMessage::UserUpdated(user_struct.clone()));
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
