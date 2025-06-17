@@ -156,6 +156,8 @@ async fn handle_connection(
                                         username: updated_user.username.clone(),
                                         color: updated_user.color,
                                         role: updated_user.role.clone(),
+                                        profile_pic: updated_user.profile_pic.clone(),
+                                        cover_banner: updated_user.cover_banner.clone(),
                                     });
                                     let peers = peer_map.lock().await;
                                     let tx = &peers.get(&conn_id).unwrap().tx;
@@ -290,12 +292,14 @@ async fn handle_connection(
                     let mut users = Vec::new();
                     for peer in peers.values() {
                         if let Some(uid) = peer.user_id {
-                            if let Ok(profile) = db_get_user_by_id(uid).await {
+                            if let Ok(_profile) = db_get_user_by_id(uid).await {
                                 users.push(User {
-                                    id: profile.id,
-                                    username: profile.username,
-                                    color: profile.color,
-                                    role: profile.role,
+                                    id: _profile.id,
+                                    username: _profile.username,
+                                    color: _profile.color,
+                                    role: _profile.role,
+                                    profile_pic: _profile.profile_pic.clone(),
+                                    cover_banner: _profile.cover_banner.clone(),
                                 });
                             }
                         }
@@ -352,6 +356,8 @@ async fn handle_connection(
                                 username: profile.username.clone(),
                                 color: profile.color,
                                 role: profile.role.clone(),
+                                profile_pic: Some(String::new()),
+                                cover_banner: Some(String::new()),
                             };
                             current_user = Some(user_data.clone());
                             peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
@@ -377,6 +383,8 @@ async fn handle_connection(
                                 username: profile.username.clone(),
                                 color: profile.color,
                                 role: profile.role.clone(),
+                                profile_pic: profile.profile_pic.clone(),
+                                cover_banner: profile.cover_banner.clone(),
                             };
                             current_user = Some(user_data.clone());
                             let tx = {
@@ -507,32 +515,39 @@ async fn db_get_user_by_id(user_id: Uuid) -> Result<UserProfile, String> {
     let user_id = user_id.to_string();
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT id, username, password_hash, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id, username, password_hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
         let user = stmt.query_row(params![user_id], |row| {
             let id: String = row.get(0)?;
             let username: String = row.get(1)?;
             let hash: String = row.get(2)?;
             let color: String = row.get(3)?;
             let role: String = row.get(4)?;
-            Ok((id, username, hash, color, role))
+            let bio: Option<String> = row.get(5)?;
+            let url1: Option<String> = row.get(6)?;
+            let url2: Option<String> = row.get(7)?;
+            let url3: Option<String> = row.get(8)?;
+            let location: Option<String> = row.get(9)?;
+            let profile_pic: Option<String> = row.get(10)?;
+            let cover_banner: Option<String> = row.get(11)?;
+            Ok((id, username, hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner))
         }).map_err(|_| "User not found".to_string())?;
         Ok(UserProfile {
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
-            hash: user.2,
+            hash: String::new(), // Do not send password hash to client
             color: parse_color(&user.3),
             role: match user.4.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
                 _ => UserRole::User,
             },
-            bio: None,
-            url1: None,
-            url2: None,
-            url3: None,
-            location: None,
-            profile_pic: None,
-            cover_banner: None,
+            bio: user.5,
+            url1: user.6,
+            url2: user.7,
+            url3: user.8,
+            location: user.9,
+            profile_pic: user.10,
+            cover_banner: user.11,
         })
     }).await.unwrap()
 }
@@ -597,7 +612,7 @@ async fn db_login_user(username: &str, password: &str) -> Result<UserProfile, St
         Ok(UserProfile {
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
-            hash: user.2,
+            hash: String::new(), // Do not send password hash to client
             color: parse_color(&user.3),
             role: match user.4.as_str() {
                 "Admin" => UserRole::Admin,
@@ -744,87 +759,92 @@ async fn db_get_user_profile(user_id: Uuid) -> Result<UserProfile, String> {
 // --- SQLite Forum/Thread/Post Management ---
 
 async fn db_get_forums() -> Result<Vec<Forum>, String> {
-    tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        let mut forums = Vec::new();
-        let mut stmt = conn.prepare("SELECT id, name, description FROM forums").map_err(|e| e.to_string())?;
-        let forum_rows = stmt.query_map([], |row| {
+    let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+    let mut forums = Vec::new();
+    let mut stmt = conn.prepare("SELECT id, name, description FROM forums").map_err(|e| e.to_string())?;
+    let forum_rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    }).map_err(|e| e.to_string())?;
+    for forum_row in forum_rows {
+        let (forum_id, name, description) = forum_row.map_err(|e| e.to_string())?;
+        let forum_uuid = Uuid::parse_str(&forum_id).map_err(|e| e.to_string())?;
+        // Get threads for this forum
+        let mut thread_stmt = conn.prepare("SELECT id, title, author_id FROM threads WHERE forum_id = ?1").map_err(|e| e.to_string())?;
+        let thread_rows = thread_stmt.query_map(params![forum_id.clone()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         }).map_err(|e| e.to_string())?;
-        for forum_row in forum_rows {
-            let (forum_id, name, description) = forum_row.map_err(|e| e.to_string())?;
-            let forum_uuid = Uuid::parse_str(&forum_id).map_err(|e| e.to_string())?;
-            // Get threads for this forum
-            let mut thread_stmt = conn.prepare("SELECT id, title, author_id FROM threads WHERE forum_id = ?1").map_err(|e| e.to_string())?;
-            let thread_rows = thread_stmt.query_map(params![forum_id], |row| {
+        let mut threads = Vec::new();
+        for thread_row in thread_rows {
+            let (thread_id, title, author_id) = thread_row.map_err(|e| e.to_string())?;
+            let thread_uuid = Uuid::parse_str(&thread_id).map_err(|e| e.to_string())?;
+            // Get author user
+            let mut user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+            let user_row = user_stmt.query_row(params![author_id.clone()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+            }).map_err(|e| e.to_string())?;
+            let (user_id, username, color, role) = user_row;
+            // Fetch author profile for profile_pic and cover_banner
+            let author_profile = futures::executor::block_on(db_get_user_profile(Uuid::parse_str(&user_id).unwrap())).map_err(|e| e.to_string())?;
+            let author = User {
+                id: Uuid::parse_str(&user_id).unwrap(),
+                username,
+                color: parse_color(&color),
+                role: match role.as_str() {
+                    "Admin" => UserRole::Admin,
+                    "Moderator" => UserRole::Moderator,
+                    _ => UserRole::User,
+                },
+                profile_pic: author_profile.profile_pic.clone(),
+                cover_banner: author_profile.cover_banner.clone(),
+            };
+            // Get posts for this thread
+            let mut post_stmt = conn.prepare("SELECT id, author_id, content FROM posts WHERE thread_id = ?1").map_err(|e| e.to_string())?;
+            let post_rows = post_stmt.query_map(params![thread_id.clone()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
             }).map_err(|e| e.to_string())?;
-            let mut threads = Vec::new();
-            for thread_row in thread_rows {
-                let (thread_id, title, author_id) = thread_row.map_err(|e| e.to_string())?;
-                let thread_uuid = Uuid::parse_str(&thread_id).map_err(|e| e.to_string())?;
-                // Get author user
-                let mut user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
-                let user_row = user_stmt.query_row(params![author_id.clone()], |row| {
+            let mut posts = Vec::new();
+            for post_row in post_rows {
+                let (post_id, post_author_id, content) = post_row.map_err(|e| e.to_string())?;
+                // Get post author
+                let mut post_user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+                let post_user_row = post_user_stmt.query_row(params![post_author_id.clone()], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
                 }).map_err(|e| e.to_string())?;
-                let (user_id, username, color, role) = user_row;
-                let author = User {
-                    id: Uuid::parse_str(&user_id).unwrap(),
-                    username,
-                    color: parse_color(&color),
-                    role: match role.as_str() {
+                let (puser_id, pusername, pcolor, prole) = post_user_row;
+                let post_author_profile = futures::executor::block_on(db_get_user_profile(Uuid::parse_str(&puser_id).unwrap())).map_err(|e| e.to_string())?;
+                let post_author = User {
+                    id: Uuid::parse_str(&puser_id).unwrap(),
+                    username: pusername,
+                    color: parse_color(&pcolor),
+                    role: match prole.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
                         _ => UserRole::User,
                     },
+                    profile_pic: post_author_profile.profile_pic.clone(),
+                    cover_banner: post_author_profile.cover_banner.clone(),
                 };
-                // Get posts for this thread
-                let mut post_stmt = conn.prepare("SELECT id, author_id, content FROM posts WHERE thread_id = ?1").map_err(|e| e.to_string())?;
-                let post_rows = post_stmt.query_map(params![thread_id.clone()], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-                }).map_err(|e| e.to_string())?;
-                let mut posts = Vec::new();
-                for post_row in post_rows {
-                    let (post_id, post_author_id, content) = post_row.map_err(|e| e.to_string())?;
-                    // Get post author
-                    let mut post_user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
-                    let post_user_row = post_user_stmt.query_row(params![post_author_id.clone()], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
-                    }).map_err(|e| e.to_string())?;
-                    let (puser_id, pusername, pcolor, prole) = post_user_row;
-                    let post_author = User {
-                        id: Uuid::parse_str(&puser_id).unwrap(),
-                        username: pusername,
-                        color: parse_color(&pcolor),
-                        role: match prole.as_str() {
-                            "Admin" => UserRole::Admin,
-                            "Moderator" => UserRole::Moderator,
-                            _ => UserRole::User,
-                        },
-                    };
-                    posts.push(Post {
-                        id: Uuid::parse_str(&post_id).unwrap(),
-                        author: post_author,
-                        content,
-                    });
-                }
-                threads.push(Thread {
-                    id: thread_uuid,
-                    title,
-                    author,
-                    posts,
+                posts.push(Post {
+                    id: Uuid::parse_str(&post_id).unwrap(),
+                    author: post_author,
+                    content,
                 });
             }
-            forums.push(Forum {
-                id: forum_uuid,
-                name,
-                description,
-                threads,
+            threads.push(Thread {
+                id: thread_uuid,
+                title,
+                author,
+                posts,
             });
         }
-        Ok(forums)
-    }).await.unwrap()
+        forums.push(Forum {
+            id: forum_uuid,
+            name,
+            description,
+            threads,
+        });
+    }
+    Ok(forums)
 }
 
 async fn db_create_thread(forum_id: Uuid, title: &str, author_id: Uuid, content: &str) -> Result<(), String> {
