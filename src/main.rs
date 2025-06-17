@@ -5,7 +5,7 @@ use argon2::{
     Argon2,
 };
 use common::{
-    create_initial_forums, ChatMessage, ClientMessage, Forum, Post, ServerMessage, Thread, User,
+    ChatMessage, ClientMessage, Forum, Post, ServerMessage, Thread, User,
     UserProfile, UserRole,
 };
 use futures::{SinkExt, StreamExt};
@@ -32,8 +32,6 @@ struct Peer {
 }
 
 type PeerMap = Arc<Mutex<HashMap<Uuid, Peer>>>;
-type ForumState = Arc<Mutex<Vec<Forum>>>;
-type UserState = Arc<Mutex<Vec<UserProfile>>>;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -46,11 +44,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Server listening on: {}", addr);
 
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
-    let forums = load_or_create(FORUM_DATA_PATH, create_initial_forums)?;
-    let users = load_or_create(USER_DATA_PATH, Vec::new)?;
-
-    let forum_state = Arc::new(Mutex::new(forums));
-    let user_state = Arc::new(Mutex::new(users));
 
     // Initialize the database
     let _conn = init_db()?;
@@ -64,40 +57,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::spawn(handle_connection(
             stream,
             peer_map.clone(),
-            forum_state.clone(),
-            user_state.clone(),
         ));
     }
-}
-
-fn load_or_create<T: DeserializeOwned + Serialize>(
-    path: &str,
-    default: impl Fn() -> T,
-) -> Result<T, Box<dyn Error>> {
-    match fs::read_to_string(path) {
-        Ok(data) => Ok(serde_json::from_str(&data)?),
-        Err(_) => {
-            warn!("{} not found, creating with default data.", path);
-            let default_data = default();
-            fs::write(path, serde_json::to_string_pretty(&default_data)?)?;
-            Ok(default_data)
-        }
-    }
-}
-
-async fn save_data<T: Serialize>(path: &str, data: &Mutex<T>) -> Result<(), Box<dyn Error>> {
-    let data_lock = data.lock().await;
-    let json = serde_json::to_string_pretty(&*data_lock)
-        .map_err(|e| {
-            eprintln!("[ERROR] Failed to serialize data for {}: {}", path, e);
-            e
-        })?;
-    std::fs::write(path, &json)
-        .map_err(|e| {
-            eprintln!("[ERROR] Failed to write {}: {}", path, e);
-            e
-        })?;
-    Ok(())
 }
 
 // *** FIX for Argon2 Error ***
@@ -117,19 +78,9 @@ fn verify_password(hash: &str, password: &str) -> bool {
         .is_ok()
 }
 
-async fn reload_users(user_state: &UserState) -> Result<(), Box<dyn Error>> {
-    let data = tokio::fs::read_to_string(USER_DATA_PATH).await?;
-    let users: Vec<UserProfile> = serde_json::from_str(&data)?;
-    let mut state = user_state.lock().await;
-    *state = users;
-    Ok(())
-}
-
 async fn handle_connection(
     stream: TcpStream,
     peer_map: PeerMap,
-    forum_state: ForumState,
-    user_state: UserState,
 ) {
     let conn_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();
@@ -194,9 +145,30 @@ async fn handle_connection(
                     let color_str = format!("{:?}", serializable_color.0); // Store as string
                     match db_update_user_color(user.id, &color_str).await {
                         Ok(()) => {
-                            let peers = peer_map.lock().await;
-                            let tx = &peers.get(&conn_id).unwrap().tx;
-                            tx.send(ServerMessage::Notification("Color updated.".into(), false)).unwrap();
+                            // Reload the user from DB and update current_user
+                            match db_get_user_by_id(user.id).await {
+                                Ok(updated_user) => {
+                                    current_user = Some(User {
+                                        id: updated_user.id,
+                                        username: updated_user.username.clone(),
+                                        color: updated_user.color,
+                                        role: updated_user.role.clone(),
+                                    });
+                                    let peers = peer_map.lock().await;
+                                    let tx = &peers.get(&conn_id).unwrap().tx;
+                                    // Notify client with updated user info
+                                    tx.send(ServerMessage::AuthSuccess(current_user.as_ref().unwrap().clone())).unwrap();
+                                    tx.send(ServerMessage::Notification("Color updated.".into(), false)).unwrap();
+                                }
+                                Err(e) => {
+                                    let peers = peer_map.lock().await;
+                                    let tx = &peers.get(&conn_id).unwrap().tx;
+                                    tx.send(ServerMessage::Notification(
+                                        format!("Color updated, but failed to reload user: {}", e),
+                                        true,
+                                    )).unwrap();
+                                }
+                            }
                         }
                         Err(e) => {
                             let peers = peer_map.lock().await;
@@ -397,6 +369,33 @@ fn init_db() -> SqlResult<Connection> {
 
 // --- SQLite User Management ---
 
+async fn db_get_user_by_id(user_id: Uuid) -> Result<UserProfile, String> {
+    let user_id = user_id.to_string();
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare("SELECT id, username, password_hash, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+        let user = stmt.query_row(params![user_id], |row| {
+            let id: String = row.get(0)?;
+            let username: String = row.get(1)?;
+            let hash: String = row.get(2)?;
+            let color: String = row.get(3)?;
+            let role: String = row.get(4)?;
+            Ok((id, username, hash, color, role))
+        }).map_err(|_| "User not found".to_string())?;
+        Ok(UserProfile {
+            id: Uuid::parse_str(&user.0).unwrap(),
+            username: user.1,
+            hash: user.2,
+            color: parse_color(&user.3),
+            role: match user.4.as_str() {
+                "Admin" => UserRole::Admin,
+                "Moderator" => UserRole::Moderator,
+                _ => UserRole::User,
+            },
+        })
+    }).await.unwrap()
+}
+
 async fn db_register_user(username: &str, password: &str, color: &str, role: &str) -> Result<UserProfile, String> {
     let username = username.to_string();
     let password = password.to_string();
@@ -420,7 +419,7 @@ async fn db_register_user(username: &str, password: &str, color: &str, role: &st
             id,
             username,
             hash,
-            color: Color::Green, // TODO: parse color string if needed
+            color: parse_color(&color),
             role: match role.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
@@ -451,7 +450,7 @@ async fn db_login_user(username: &str, password: &str) -> Result<UserProfile, St
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
             hash: user.2,
-            color: Color::Green, // TODO: parse color string if needed
+            color: parse_color(&user.3),
             role: match user.4.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
@@ -519,7 +518,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 let author = User {
                     id: Uuid::parse_str(&user_id).unwrap(),
                     username,
-                    color: Color::Green, // TODO: parse color string
+                    color: parse_color(&color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
@@ -543,7 +542,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                     let post_author = User {
                         id: Uuid::parse_str(&puser_id).unwrap(),
                         username: pusername,
-                        color: Color::Green, // TODO: parse color string
+                        color: parse_color(&pcolor),
                         role: match prole.as_str() {
                             "Admin" => UserRole::Admin,
                             "Moderator" => UserRole::Moderator,
@@ -686,4 +685,27 @@ async fn migrate_users_json_to_db() -> Result<(), Box<dyn Error>> {
         )?;
     }
     Ok(())
+}
+
+fn parse_color(color_str: &str) -> Color {
+    match color_str {
+        "Reset" => Color::Reset,
+        "Black" => Color::Black,
+        "Red" => Color::Red,
+        "Green" => Color::Green,
+        "Yellow" => Color::Yellow,
+        "Blue" => Color::Blue,
+        "Magenta" => Color::Magenta,
+        "Cyan" => Color::Cyan,
+        "Gray" => Color::Gray,
+        "DarkGray" => Color::DarkGray,
+        "LightRed" => Color::LightRed,
+        "LightGreen" => Color::LightGreen,
+        "LightYellow" => Color::LightYellow,
+        "LightBlue" => Color::LightBlue,
+        "LightMagenta" => Color::LightMagenta,
+        "LightCyan" => Color::LightCyan,
+        "White" => Color::White,
+        _ => Color::Reset,
+    }
 }
