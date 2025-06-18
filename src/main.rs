@@ -437,22 +437,31 @@ async fn handle_connection(
                     let role = if is_first_user { "Admin" } else { "User" };
                     match db_register_user(&username, &password, "Green", role).await {
                         Ok(profile) => {
-                            let user_data = User {
-                                id: profile.id,
-                                username: profile.username.clone(),
-                                color: profile.color,
-                                role: profile.role.clone(),
-                                profile_pic: Some(String::new()),
-                                cover_banner: Some(String::new()),
-                            };
-                            current_user = Some(user_data.clone());
-                            peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
-                            let peers = peer_map.lock().await;
-                            let tx = &peers.get(&conn_id).unwrap().tx;
-                            tx.send(ServerMessage::AuthSuccess(user_data.clone())).unwrap();
-                            // Broadcast UserJoined
-                            drop(peers); // unlock before broadcast
-                            broadcast(&peer_map, &ServerMessage::UserJoined(user_data)).await;
+                            match db_get_user_by_id(profile.id).await {
+                                Ok(full_profile) => {
+                                    let user_data = User {
+                                        id: full_profile.id,
+                                        username: full_profile.username.clone(),
+                                        color: full_profile.color,
+                                        role: full_profile.role.clone(),
+                                        profile_pic: full_profile.profile_pic.clone(),
+                                        cover_banner: full_profile.cover_banner.clone(),
+                                    };
+                                    current_user = Some(user_data.clone());
+                                    peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
+                                    let peers = peer_map.lock().await;
+                                    let tx = &peers.get(&conn_id).unwrap().tx;
+                                    tx.send(ServerMessage::AuthSuccess(user_data.clone())).unwrap();
+                                    // Broadcast UserJoined
+                                    drop(peers); // unlock before broadcast
+                                    broadcast(&peer_map, &ServerMessage::UserJoined(user_data)).await;
+                                }
+                                Err(e) => {
+                                    let peers = peer_map.lock().await;
+                                    let tx = &peers.get(&conn_id).unwrap().tx;
+                                    tx.send(ServerMessage::AuthFailure(e)).unwrap();
+                                }
+                            }
                         }
                         Err(e) => {
                             let peers = peer_map.lock().await;
@@ -464,27 +473,36 @@ async fn handle_connection(
                 ClientMessage::Login { username, password } => {
                     match db_login_user(&username, &password).await {
                         Ok(profile) => {
-                            let user_data = User {
-                                id: profile.id,
-                                username: profile.username.clone(),
-                                color: profile.color,
-                                role: profile.role.clone(),
-                                profile_pic: profile.profile_pic.clone(),
-                                cover_banner: profile.cover_banner.clone(),
-                            };
-                            current_user = Some(user_data.clone());
-                            let tx = {
-                                let mut peers = peer_map.lock().await;
-                                if let Some(peer) = peers.get_mut(&conn_id) {
-                                    peer.user_id = Some(user_data.id);
-                                    peer.tx.clone()
-                                } else {
-                                    continue;
+                            match db_get_user_by_id(profile.id).await {
+                                Ok(full_profile) => {
+                                    let user_data = User {
+                                        id: full_profile.id,
+                                        username: full_profile.username.clone(),
+                                        color: full_profile.color,
+                                        role: full_profile.role.clone(),
+                                        profile_pic: full_profile.profile_pic.clone(),
+                                        cover_banner: full_profile.cover_banner.clone(),
+                                    };
+                                    current_user = Some(user_data.clone());
+                                    let tx = {
+                                        let mut peers = peer_map.lock().await;
+                                        if let Some(peer) = peers.get_mut(&conn_id) {
+                                            peer.user_id = Some(user_data.id);
+                                            peer.tx.clone()
+                                        } else {
+                                            continue;
+                                        }
+                                    };
+                                    tx.send(ServerMessage::AuthSuccess(user_data.clone())).unwrap();
+                                    // Broadcast UserJoined
+                                    broadcast(&peer_map, &ServerMessage::UserJoined(user_data)).await;
                                 }
-                            };
-                            tx.send(ServerMessage::AuthSuccess(user_data.clone())).unwrap();
-                            // Broadcast UserJoined
-                            broadcast(&peer_map, &ServerMessage::UserJoined(user_data)).await;
+                                Err(e) => {
+                                    let peers = peer_map.lock().await;
+                                    let tx = &peers.get(&conn_id).unwrap().tx;
+                                    tx.send(ServerMessage::AuthFailure(e)).unwrap();
+                                }
+                            }
                         }
                         Err(e) => {
                             let peers = peer_map.lock().await;
