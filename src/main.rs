@@ -395,15 +395,32 @@ async fn handle_connection(
                         }
                     }
                 }
-                ClientMessage::GetChannelMessages { channel_id } => {
-                    // Fetch last 50 messages for the channel
-                    let messages = {
+                ClientMessage::GetChannelMessages { channel_id, before } => {
+                    // Fetch up to 50 messages before the given message (or latest if None)
+                    let (messages, history_complete) = {
                         let conn = Connection::open(DB_PATH).unwrap();
-                        let mut stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp DESC LIMIT 50").unwrap();
-                        let rows = stmt.query_map(params![channel_id.to_string()], |row| {
-                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
-                        }).unwrap();
                         let mut msgs = Vec::new();
+                        let mut stmt;
+                        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(channel_id.to_string())];
+                        if let Some(before_id) = before {
+                            // Get timestamp of the before_id message
+                            let mut ts_stmt = conn.prepare("SELECT timestamp FROM channel_messages WHERE id = ?1").unwrap();
+                            let ts: i64 = ts_stmt.query_row(params![before_id.to_string()], |row| row.get(0)).unwrap_or(i64::MAX);
+                            stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 AND timestamp < ?2 ORDER BY timestamp DESC LIMIT 50").unwrap();
+                            params_vec.push(Box::new(ts));
+                        } else {
+                            stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp DESC LIMIT 50").unwrap();
+                        }
+                        // Use a boxed iterator to unify closure types for Rust
+                        let rows: Box<dyn Iterator<Item = _>> = if params_vec.len() == 2 {
+                            Box::new(stmt.query_map(params![params_vec[0].as_ref(), params_vec[1].as_ref()], |row| {
+                                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+                            }).unwrap())
+                        } else {
+                            Box::new(stmt.query_map(params![params_vec[0].as_ref()], |row| {
+                                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
+                            }).unwrap())
+                        };
                         for row in rows {
                             let (id, sent_by, timestamp, content) = row.unwrap();
                             let sent_by_uuid = Uuid::parse_str(&sent_by).unwrap();
@@ -420,11 +437,20 @@ async fn handle_connection(
                             });
                         }
                         msgs.reverse(); // Oldest first
-                        msgs
+                        // Check if we've reached the oldest message
+                        let history_complete = if !msgs.is_empty() {
+                            let oldest_ts = msgs.first().unwrap().timestamp;
+                            let mut min_stmt = conn.prepare("SELECT MIN(timestamp) FROM channel_messages WHERE channel_id = ?1").unwrap();
+                            let min_ts: i64 = min_stmt.query_row(params![channel_id.to_string()], |row| row.get(0)).unwrap_or(oldest_ts);
+                            oldest_ts <= min_ts
+                        } else {
+                            true // No messages means history is complete
+                        };
+                        (msgs, history_complete)
                     };
                     let peers = peer_map.lock().await;
                     let tx = &peers.get(&conn_id).unwrap().tx;
-                    let _ = tx.send(ServerMessage::ChannelMessages { channel_id, messages });
+                    let _ = tx.send(ServerMessage::ChannelMessages { channel_id, messages, history_complete });
                 }
                 ClientMessage::GetChannelUserList { channel_id } => {
                     // Fetch all users for the channel in a blocking task
