@@ -6,7 +6,7 @@ use argon2::{
 };
 use common::{
     ChatMessage, ClientMessage, Forum, Post, ServerMessage, Thread, User,
-    UserProfile, UserRole,
+    UserProfile, UserRole, UserStatus,
 };
 use futures::{SinkExt, StreamExt};
 use ratatui::style::Color;
@@ -154,6 +154,7 @@ async fn handle_connection(
                                         role: updated_user.role.clone(),
                                         profile_pic: updated_user.profile_pic.clone(),
                                         cover_banner: updated_user.cover_banner.clone(),
+                                        status: UserStatus::Connected, // <-- Set status here
                                     });
                                     let peers = peer_map.lock().await;
                                     let tx = &peers.get(&conn_id).unwrap().tx;
@@ -262,6 +263,7 @@ async fn handle_connection(
                                     role: _profile.role,
                                     profile_pic: _profile.profile_pic.clone(),
                                     cover_banner: _profile.cover_banner.clone(),
+                                    status: UserStatus::Connected, // <-- Set status here
                                 });
                             }
                         }
@@ -285,6 +287,7 @@ async fn handle_connection(
                                         role: updated_user.role,
                                         profile_pic: updated_user.profile_pic.clone(),
                                         cover_banner: updated_user.cover_banner.clone(),
+                                        status: UserStatus::Connected, // <-- Set status here
                                     };
                                     for peer in peers.values() {
                                         let _ = peer.tx.send(ServerMessage::UserUpdated(user_struct.clone()));
@@ -423,6 +426,40 @@ async fn handle_connection(
                     let tx = &peers.get(&conn_id).unwrap().tx;
                     let _ = tx.send(ServerMessage::ChannelMessages { channel_id, messages });
                 }
+                ClientMessage::GetChannelUserList { channel_id } => {
+                    // Fetch all users for the channel in a blocking task
+                    let channel_id_str = channel_id.to_string();
+                    let user_ids: Vec<Uuid> = tokio::task::spawn_blocking(move || {
+                        let conn = Connection::open(DB_PATH).unwrap();
+                        let mut stmt = conn.prepare("SELECT user_id FROM channel_users WHERE channel_id = ?1").unwrap();
+                        stmt.query_map(params![channel_id_str], |row| row.get::<_, String>(0))
+                            .unwrap()
+                            .map(|r| Uuid::parse_str(&r.unwrap()).unwrap())
+                            .collect::<Vec<Uuid>>()
+                    }).await.unwrap();
+                    let peers = peer_map.lock().await;
+                    let mut users = Vec::new();
+                    for uid in user_ids {
+                        let status = if peers.values().any(|p| p.user_id == Some(uid)) {
+                            common::UserStatus::Connected
+                        } else {
+                            common::UserStatus::Offline
+                        };
+                        if let Ok(profile) = db_get_user_by_id(uid).await {
+                            users.push(common::User {
+                                id: profile.id,
+                                username: profile.username,
+                                color: profile.color,
+                                role: profile.role,
+                                profile_pic: profile.profile_pic.clone(),
+                                cover_banner: profile.cover_banner.clone(),
+                                status,
+                            });
+                        }
+                    }
+                    let tx = &peers.get(&conn_id).unwrap().tx;
+                    let _ = tx.send(ServerMessage::ChannelUserList { channel_id, users });
+                }
                 _ => {} // Ignore other messages when logged in
             }
         } else { // Not logged in
@@ -446,6 +483,7 @@ async fn handle_connection(
                                         role: full_profile.role.clone(),
                                         profile_pic: full_profile.profile_pic.clone(),
                                         cover_banner: full_profile.cover_banner.clone(),
+                                        status: UserStatus::Connected, // <-- Set status here
                                     };
                                     current_user = Some(user_data.clone());
                                     peer_map.lock().await.get_mut(&conn_id).unwrap().user_id = Some(user_data.id);
@@ -482,6 +520,7 @@ async fn handle_connection(
                                         role: full_profile.role.clone(),
                                         profile_pic: full_profile.profile_pic.clone(),
                                         cover_banner: full_profile.cover_banner.clone(),
+                                        status: UserStatus::Connected, // <-- Set status here
                                     };
                                     current_user = Some(user_data.clone());
                                     let tx = {
@@ -979,6 +1018,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 },
                 profile_pic: author_profile.profile_pic.clone(),
                 cover_banner: author_profile.cover_banner.clone(),
+                status: UserStatus::Connected, // <-- Set status here
             };
             // Get posts for this thread
             let mut post_stmt = conn.prepare("SELECT id, author_id, content FROM posts WHERE thread_id = ?1").map_err(|e| e.to_string())?;
@@ -1006,6 +1046,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                     },
                     profile_pic: post_author_profile.profile_pic.clone(),
                     cover_banner: post_author_profile.cover_banner.clone(),
+                    status: UserStatus::Connected, // <-- Set status here
                 };
                 posts.push(Post {
                     id: Uuid::parse_str(&post_id).unwrap(),
