@@ -1369,27 +1369,7 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
                     if read != 0 { can_read.push(uuid); }
                     if write != 0 { can_write.push(uuid); }
                 }
-                // Fetch messages (last 50)
-                let mut msg_stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp ASC LIMIT 50").map_err(|e| e.to_string())?;
-                let msg_rows = msg_stmt.query_map(params![chan_id.clone()], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
-                }).map_err(|e| e.to_string())?;
-                let mut messages = Vec::new();
-                for msg_row in msg_rows {
-                    let (msg_id, sent_by, timestamp, content) = msg_row.map_err(|e| e.to_string())?;
-                    let sent_by_uuid = Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?;
-                    let author_profile = futures::executor::block_on(db_get_user_by_id(sent_by_uuid)).map_err(|e| e.to_string())?;
-                    messages.push(common::ChannelMessage {
-                        id: Uuid::parse_str(&msg_id).map_err(|e| e.to_string())?,
-                        channel_id,
-                        sent_by: sent_by_uuid,
-                        timestamp,
-                        content,
-                        author_username: author_profile.username,
-                        author_color: author_profile.color,
-                        author_profile_pic: author_profile.profile_pic,
-                    });
-                }
+                // Do NOT fetch messages here! Only fill metadata.
                 channels.push(Channel {
                     id: channel_id,
                     server_id: server_id,
@@ -1397,7 +1377,7 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
                     description: chan_desc,
                     permissions: common::ChannelPermissions { can_read, can_write },
                     userlist: channel_userlist,
-                    messages,
+                    messages: Vec::new(), // Always empty
                 });
             }
             servers.push(Server {
