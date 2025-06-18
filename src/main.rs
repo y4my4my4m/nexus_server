@@ -486,6 +486,68 @@ async fn handle_connection(
                     let tx = &peers.get(&conn_id).unwrap().tx;
                     let _ = tx.send(ServerMessage::ChannelUserList { channel_id, users });
                 }
+                ClientMessage::GetDMUserList => {
+                    match db_get_dm_user_list(user.id).await {
+                        Ok(mut users) => {
+                            // Update status for online users
+                            let peers = peer_map.lock().await;
+                            for u in users.iter_mut() {
+                                if peers.values().any(|p| p.user_id == Some(u.id)) {
+                                    u.status = UserStatus::Connected;
+                                }
+                            }
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::DMUserList(users));
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to fetch DM user list: {}", e), true));
+                        }
+                    }
+                }
+                ClientMessage::GetDirectMessages { user_id: other_id, before } => {
+                    match db_get_direct_messages(user.id, other_id, before).await {
+                        Ok((messages, history_complete)) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::DirectMessages { user_id: other_id, messages, history_complete });
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to fetch DMs: {}", e), true));
+                        }
+                    }
+                }
+                ClientMessage::GetNotifications { before } => {
+                    match db_get_notifications(user.id, before).await {
+                        Ok((notifications, history_complete)) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notifications { notifications, history_complete });
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to fetch notifications: {}", e), true));
+                        }
+                    }
+                }
+                ClientMessage::MarkNotificationRead { notification_id } => {
+                    match db_mark_notification_read(notification_id).await {
+                        Ok(()) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::NotificationUpdated { notification_id, read: true });
+                        }
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to mark notification read: {}", e), true));
+                        }
+                    }
+                }
                 _ => {} // Ignore other messages when logged in
             }
         } else { // Not logged in
@@ -802,6 +864,19 @@ fn init_db() -> SqlResult<Connection> {
             content TEXT NOT NULL,
             FOREIGN KEY(channel_id) REFERENCES channels(id),
             FOREIGN KEY(sent_by) REFERENCES users(id)
+        )",
+        [],
+    )?;
+    // Notifications
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS notifications (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            related_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            read INTEGER NOT NULL DEFAULT 0,
+            extra TEXT
         )",
         [],
     )?;
@@ -1278,6 +1353,84 @@ async fn db_create_channel_message(
     }).await.unwrap()
 }
 
+// --- Notification DB helpers ---
+async fn db_insert_notification(user_id: Uuid, notif_type: &str, related_id: Uuid, extra: Option<String>) -> Result<(), String> {
+    let user_id = user_id.to_string();
+    let notif_type = notif_type.to_string();
+    let related_id = related_id.to_string();
+    let extra = extra.unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO notifications (id, user_id, type, related_id, created_at, read, extra) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+            params![id, user_id, notif_type, related_id, now, extra],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
+async fn db_get_notifications(user_id: Uuid, before: Option<i64>) -> Result<(Vec<common::Notification>, bool), String> {
+    use common::{Notification, NotificationType};
+    let user_id = user_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut stmt;
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(user_id.clone())];
+        if let Some(before_ts) = before {
+            stmt = conn.prepare("SELECT id, type, related_id, created_at, read, extra FROM notifications WHERE user_id = ?1 AND created_at < ?2 ORDER BY created_at DESC LIMIT 50").map_err(|e| e.to_string())?;
+            params_vec.push(Box::new(before_ts));
+        } else {
+            stmt = conn.prepare("SELECT id, type, related_id, created_at, read, extra FROM notifications WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 50").map_err(|e| e.to_string())?;
+        }
+        let rows: Box<dyn Iterator<Item = _>> = if params_vec.len() == 2 {
+            Box::new(stmt.query_map(params![params_vec[0].as_ref(), params_vec[1].as_ref()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i32>(4)?, row.get::<_, Option<String>>(5)?))
+            }).unwrap())
+        } else {
+            Box::new(stmt.query_map(params![params_vec[0].as_ref()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i32>(4)?, row.get::<_, Option<String>>(5)?))
+            }).unwrap())
+        };
+        let mut notifications = Vec::new();
+        for row in rows {
+            let (id, notif_type, related_id, created_at, read, extra) = row.map_err(|e| e.to_string())?;
+            let notif_type = match notif_type.as_str() {
+                "ThreadReply" => NotificationType::ThreadReply,
+                "DM" => NotificationType::DM,
+                "Announcement" => NotificationType::Announcement,
+                "Mention" => NotificationType::Mention,
+                other => NotificationType::Other(other.to_string()),
+            };
+            notifications.push(Notification {
+                id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                user_id: Uuid::parse_str(&user_id).map_err(|e| e.to_string())?,
+                notif_type,
+                related_id: Uuid::parse_str(&related_id).map_err(|e| e.to_string())?,
+                created_at,
+                read: read != 0,
+                extra,
+            });
+        }
+        notifications.reverse(); // Oldest first
+        let history_complete = notifications.len() < 50;
+        Ok((notifications, history_complete))
+    }).await.unwrap()
+}
+
+async fn db_mark_notification_read(notification_id: Uuid) -> Result<(), String> {
+    let notification_id = notification_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE notifications SET read = 1 WHERE id = ?1",
+            params![notification_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }).await.unwrap()
+}
+
 fn parse_color(color_str: &str) -> Color {
     match color_str {
         "Reset" => Color::Reset,
@@ -1437,4 +1590,108 @@ async fn ensure_default_server_exists() -> Result<(), String> {
     let _ = db_create_channel(server_id, "cyberdeck", "Tech talk").await?;
     let _ = db_create_channel(server_id, "random", "Off-topic").await?;
     Ok(())
+}
+
+// --- Fetch users you have DMs with ---
+async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
+    use std::collections::HashSet;
+    use common::User;
+    let user_id_str = user_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        // Find all user_ids who have exchanged DMs with this user
+        let mut stmt = conn.prepare("SELECT from_user_id, to_user_id FROM direct_messages WHERE from_user_id = ?1 OR to_user_id = ?1").map_err(|e| e.to_string())?;
+        let mut user_ids = HashSet::new();
+        let rows = stmt.query_map(params![user_id_str.clone()], |row| {
+            let from: String = row.get(0)?;
+            let to: String = row.get(1)?;
+            Ok((from, to))
+        }).map_err(|e| e.to_string())?;
+        for row in rows {
+            let (from, to) = row.map_err(|e| e.to_string())?;
+            if from != user_id_str { user_ids.insert(from); }
+            if to != user_id_str { user_ids.insert(to); }
+        }
+        // Fetch user profiles
+        let mut users = Vec::new();
+        for uid in user_ids {
+            let uuid = Uuid::parse_str(&uid).map_err(|e| e.to_string())?;
+            if let Ok(profile) = futures::executor::block_on(db_get_user_by_id(uuid)) {
+                users.push(User {
+                    id: profile.id,
+                    username: profile.username,
+                    color: profile.color,
+                    role: profile.role,
+                    profile_pic: profile.profile_pic.clone(),
+                    cover_banner: profile.cover_banner.clone(),
+                    status: UserStatus::Offline, // Status will be updated by server logic if needed
+                });
+            }
+        }
+        Ok(users)
+    }).await.unwrap()
+}
+
+// --- Fetch paginated DM history with a user ---
+async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -> Result<(Vec<common::DirectMessage>, bool), String> {
+    use common::DirectMessage;
+    let user1_str = user1.to_string();
+    let user2_str = user2.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let mut msgs = Vec::new();
+        let mut stmt;
+        if let Some(before_ts) = before {
+            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE ((from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)) AND timestamp < ?3 ORDER BY timestamp DESC LIMIT 50").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone(), before_ts], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
+            }).map_err(|e| e.to_string())?;
+            for row in rows {
+                let (id, from, to, content, timestamp) = row.map_err(|e| e.to_string())?;
+                let from_uuid = Uuid::parse_str(&from).map_err(|e| e.to_string())?;
+                let author_profile = futures::executor::block_on(db_get_user_by_id(from_uuid)).map_err(|e| e.to_string())?;
+                msgs.push(DirectMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    from: from_uuid,
+                    to: Uuid::parse_str(&to).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: author_profile.username,
+                    author_color: author_profile.color,
+                    author_profile_pic: author_profile.profile_pic,
+                });
+            }
+        } else {
+            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1) ORDER BY timestamp DESC LIMIT 50").map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
+            }).map_err(|e| e.to_string())?;
+            for row in rows {
+                let (id, from, to, content, timestamp) = row.map_err(|e| e.to_string())?;
+                let from_uuid = Uuid::parse_str(&from).map_err(|e| e.to_string())?;
+                let author_profile = futures::executor::block_on(db_get_user_by_id(from_uuid)).map_err(|e| e.to_string())?;
+                msgs.push(DirectMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    from: from_uuid,
+                    to: Uuid::parse_str(&to).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: author_profile.username,
+                    author_color: author_profile.color,
+                    author_profile_pic: author_profile.profile_pic,
+                });
+            }
+        }
+        msgs.reverse(); // Oldest first
+        // Check if we've reached the oldest message
+        let history_complete = if !msgs.is_empty() {
+            let oldest_ts = msgs.first().unwrap().timestamp;
+            let mut min_stmt = conn.prepare("SELECT MIN(timestamp) FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)").map_err(|e| e.to_string())?;
+            let min_ts: i64 = min_stmt.query_row(params![user1_str.clone(), user2_str.clone()], |row| row.get(0)).unwrap_or(oldest_ts);
+            oldest_ts <= min_ts
+        } else {
+            true
+        };
+        Ok((msgs, history_complete))
+    }).await.unwrap()
 }
