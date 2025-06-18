@@ -503,7 +503,7 @@ async fn handle_connection(
                             // Add user to default server and all its channels
                             let default_server_id = {
                                 let conn = Connection::open(DB_PATH).unwrap();
-                                conn.query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get::<_, String>(0)).ok()
+                                conn.query_row("SELECT id FROM servers ORDER BY rowid ASC LIMIT 1", [], |row| row.get::<_, String>(0)).ok()
                             };
                             if let Some(server_id_str) = default_server_id {
                                 let server_id = Uuid::parse_str(&server_id_str).unwrap();
