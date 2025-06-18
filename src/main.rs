@@ -694,6 +694,7 @@ fn init_db() -> SqlResult<Connection> {
             forum_id TEXT NOT NULL,
             title TEXT NOT NULL,
             author_id TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
             FOREIGN KEY(forum_id) REFERENCES forums(id),
             FOREIGN KEY(author_id) REFERENCES users(id)
         )",
@@ -706,6 +707,7 @@ fn init_db() -> SqlResult<Connection> {
             thread_id TEXT NOT NULL,
             author_id TEXT NOT NULL,
             content TEXT NOT NULL,
+            timestamp INTEGER NOT NULL,
             FOREIGN KEY(thread_id) REFERENCES threads(id),
             FOREIGN KEY(author_id) REFERENCES users(id)
         )",
@@ -1068,13 +1070,13 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
         let (forum_id, name, description) = forum_row.map_err(|e| e.to_string())?;
         let forum_uuid = Uuid::parse_str(&forum_id).map_err(|e| e.to_string())?;
         // Get threads for this forum
-        let mut thread_stmt = conn.prepare("SELECT id, title, author_id FROM threads WHERE forum_id = ?1").map_err(|e| e.to_string())?;
+        let mut thread_stmt = conn.prepare("SELECT id, title, author_id, timestamp FROM threads WHERE forum_id = ?1").map_err(|e| e.to_string())?;
         let thread_rows = thread_stmt.query_map(params![forum_id.clone()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
         }).map_err(|e| e.to_string())?;
         let mut threads = Vec::new();
         for thread_row in thread_rows {
-            let (thread_id, title, author_id) = thread_row.map_err(|e| e.to_string())?;
+            let (thread_id, title, author_id, thread_timestamp) = thread_row.map_err(|e| e.to_string())?;
             let thread_uuid = Uuid::parse_str(&thread_id).map_err(|e| e.to_string())?;
             // Get author user
             let mut user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
@@ -1098,13 +1100,13 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 status: UserStatus::Connected, // <-- Set status here
             };
             // Get posts for this thread
-            let mut post_stmt = conn.prepare("SELECT id, author_id, content FROM posts WHERE thread_id = ?1").map_err(|e| e.to_string())?;
+            let mut post_stmt = conn.prepare("SELECT id, author_id, content, timestamp FROM posts WHERE thread_id = ?1").map_err(|e| e.to_string())?;
             let post_rows = post_stmt.query_map(params![thread_id.clone()], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
             }).map_err(|e| e.to_string())?;
             let mut posts = Vec::new();
             for post_row in post_rows {
-                let (post_id, post_author_id, content) = post_row.map_err(|e| e.to_string())?;
+                let (post_id, post_author_id, content, post_timestamp) = post_row.map_err(|e| e.to_string())?;
                 // Get post author
                 let mut post_user_stmt = conn.prepare("SELECT id, username, color, role FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
                 let post_user_row = post_user_stmt.query_row(params![post_author_id.clone()], |row| {
@@ -1129,7 +1131,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                     id: Uuid::parse_str(&post_id).unwrap(),
                     author: post_author,
                     content,
-                    timestamp: chrono::Utc::now().timestamp_millis(), // Placeholder timestamp
+                    timestamp: post_timestamp,
                 });
             }
             threads.push(Thread {
@@ -1137,7 +1139,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 title,
                 author,
                 posts,
-                timestamp: chrono::Utc::now().timestamp_millis(), // Placeholder timestamp
+                timestamp: thread_timestamp,
             });
         }
         forums.push(Forum {
@@ -1155,19 +1157,20 @@ async fn db_create_thread(forum_id: Uuid, title: &str, author_id: Uuid, content:
     let title = title.to_string();
     let author_id = author_id.to_string();
     let content = content.to_string();
+    let now = chrono::Utc::now().timestamp();
     tokio::task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         let thread_id = Uuid::new_v4().to_string();
         let post_id = Uuid::new_v4().to_string();
         // Insert thread
         conn.execute(
-            "INSERT INTO threads (id, forum_id, title, author_id) VALUES (?1, ?2, ?3, ?4)",
-            params![thread_id, forum_id, title, author_id],
+            "INSERT INTO threads (id, forum_id, title, author_id, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![thread_id, forum_id, title, author_id, now],
         ).map_err(|e| e.to_string())?;
         // Insert first post
         conn.execute(
-            "INSERT INTO posts (id, thread_id, author_id, content) VALUES (?1, ?2, ?3, ?4)",
-            params![post_id, thread_id, author_id, content],
+            "INSERT INTO posts (id, thread_id, author_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![post_id, thread_id, author_id, content, now],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }).await.unwrap()
@@ -1177,12 +1180,13 @@ async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> Resu
     let thread_id = thread_id.to_string();
     let author_id = author_id.to_string();
     let content = content.to_string();
+    let now = chrono::Utc::now().timestamp();
     tokio::task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         let post_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO posts (id, thread_id, author_id, content) VALUES (?1, ?2, ?3, ?4)",
-            params![post_id, thread_id, author_id, content],
+            "INSERT INTO posts (id, thread_id, author_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![post_id, thread_id, author_id, content, now],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }).await.unwrap()
