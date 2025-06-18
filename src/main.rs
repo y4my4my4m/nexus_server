@@ -196,11 +196,27 @@ async fn handle_connection(
                     }
                 }
                 ClientMessage::SendDirectMessage { to, content } => {
-                    // Store DM in DB
+                    // Store DM in DB and get its UUID
                     let from_user = user.clone();
                     let to_user_id = to;
                     let now = chrono::Utc::now().timestamp();
-                    let _ = db_store_direct_message(user.id, to_user_id, &content, now).await;
+                    let dm_id = db_store_direct_message(user.id, to_user_id, &content, now).await;
+                    let dm_id = match dm_id {
+                        Ok(id) => id,
+                        Err(e) => {
+                            let peers = peer_map.lock().await;
+                            let tx = &peers.get(&conn_id).unwrap().tx;
+                            let _ = tx.send(ServerMessage::Notification(format!("Failed to send DM: {}", e), true));
+                            return;
+                        }
+                    };
+                    // Create notification for recipient, referencing the DM UUID
+                    let _ = db_insert_notification(
+                        to_user_id,
+                        "DM",
+                        dm_id,
+                        Some(format!("From: {}", from_user.username))
+                    ).await;
                     // Send DM to recipient if online
                     let peers = peer_map.lock().await;
                     for peer in peers.values() {
@@ -1467,18 +1483,18 @@ fn extract_mentions(content: &str) -> Vec<String> {
 }
 
 // --- Store direct message in DB ---
-async fn db_store_direct_message(from_user_id: Uuid, to_user_id: Uuid, content: &str, timestamp: i64) -> Result<(), String> {
+async fn db_store_direct_message(from_user_id: Uuid, to_user_id: Uuid, content: &str, timestamp: i64) -> Result<Uuid, String> {
     let from_user_id = from_user_id.to_string();
     let to_user_id = to_user_id.to_string();
     let content = content.to_string();
     tokio::task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        let id = Uuid::new_v4().to_string();
+        let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO direct_messages (id, from_user_id, to_user_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, from_user_id, to_user_id, content, timestamp],
+            params![id.to_string(), from_user_id, to_user_id, content, timestamp],
         ).map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(id)
     }).await.unwrap()
 }
 
