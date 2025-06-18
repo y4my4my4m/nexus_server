@@ -1338,15 +1338,15 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
             let (id, name, description, public, invite_code, icon, banner, owner) = server_row.map_err(|e| e.to_string())?;
             let server_id = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
             // Fetch mods
-            let mut mods_stmt = conn.prepare("SELECT user_id FROM server_mods WHERE server_id = ?1").map_err(|e| e.to_string())?;
+            let mut mods_stmt = conn.prepare("SELECT user_id FROM server_mods WHERE server_id = ?1 ORDER BY user_id ASC").map_err(|e| e.to_string())?;
             let mods = mods_stmt.query_map(params![id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
                 .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
             // Fetch userlist
-            let mut users_stmt = conn.prepare("SELECT user_id FROM server_users WHERE server_id = ?1").map_err(|e| e.to_string())?;
+            let mut users_stmt = conn.prepare("SELECT user_id FROM server_users WHERE server_id = ?1 ORDER BY user_id ASC").map_err(|e| e.to_string())?;
             let userlist = users_stmt.query_map(params![id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
                 .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
             // Fetch only channels the user is a member of
-            let mut channels_stmt = conn.prepare("SELECT id, name, description FROM channels WHERE server_id = ?1 AND id IN (SELECT channel_id FROM channel_users WHERE user_id = ?2)").map_err(|e| e.to_string())?;
+            let mut channels_stmt = conn.prepare("SELECT id, name, description FROM channels WHERE server_id = ?1 AND id IN (SELECT channel_id FROM channel_users WHERE user_id = ?2) ORDER BY name ASC").map_err(|e| e.to_string())?;
             let channel_rows = channels_stmt.query_map(params![id.clone(), user_id.clone()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
             }).map_err(|e| e.to_string())?;
@@ -1355,7 +1355,12 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
                 let (chan_id, chan_name, chan_desc) = channel_row.map_err(|e| e.to_string())?;
                 let channel_id = Uuid::parse_str(&chan_id).map_err(|e| e.to_string())?;
                 // Fetch channel userlist
-                let mut cu_stmt = conn.prepare("SELECT user_id FROM channel_users WHERE channel_id = ?1").map_err(|e| e.to_string())?;
+                let mut cu_stmt = conn.prepare(
+                    "SELECT cu.user_id FROM channel_users cu
+                     INNER JOIN users u ON cu.user_id = u.id
+                     WHERE cu.channel_id = ?1
+                     ORDER BY u.username ASC"
+                ).map_err(|e| e.to_string())?;
                 let channel_userlist = cu_stmt.query_map(params![chan_id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
                     .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
                 // Fetch permissions
