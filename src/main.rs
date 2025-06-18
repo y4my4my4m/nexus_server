@@ -1129,6 +1129,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                     id: Uuid::parse_str(&post_id).unwrap(),
                     author: post_author,
                     content,
+                    timestamp: chrono::Utc::now().timestamp_millis(), // Placeholder timestamp
                 });
             }
             threads.push(Thread {
@@ -1136,6 +1137,7 @@ async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 title,
                 author,
                 posts,
+                timestamp: chrono::Utc::now().timestamp_millis(), // Placeholder timestamp
             });
         }
         forums.push(Forum {
