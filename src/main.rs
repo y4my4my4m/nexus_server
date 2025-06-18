@@ -194,39 +194,6 @@ async fn handle_connection(
                         }
                     }
                 }
-                ClientMessage::SendChatMessage(content) => {
-                    let chat_msg = ServerMessage::NewChatMessage(ChatMessage {
-                        author: user.username.clone(),
-                        content: content.clone(),
-                        color: user.color,
-                    });
-                    broadcast(&peer_map, &chat_msg).await;
-                    // --- Mention logic ---
-                    let mentioned = extract_mentions(&content);
-                    if !mentioned.is_empty() {
-                        let peers = peer_map.lock().await;
-                        for username in mentioned {
-                            if let Some((_, peer)) = peers.iter().find(|(_, p)| {
-                                if let Some(uid) = p.user_id {
-                                    if let Ok(profile) = futures::executor::block_on(db_get_user_by_id(uid)) {
-                                        profile.username == username
-                                    } else { false }
-                                } else { false }
-                            }) {
-                                if let Some(uid) = peer.user_id {
-                                    if let Ok(_profile) = db_get_user_by_id(uid).await {
-                                        let from_user = user.clone();
-                                        let tx = &peer.tx;
-                                        let _ = tx.send(ServerMessage::MentionNotification {
-                                            from: from_user,
-                                            content: content.clone(),
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 ClientMessage::SendDirectMessage { to, content } => {
                     // Store DM in DB
                     let from_user = user.clone();
@@ -390,6 +357,30 @@ async fn handle_connection(
                                 if let Some(uid) = peer.user_id {
                                     if channel_userlist.contains(&uid) {
                                         let _ = peer.tx.send(ServerMessage::NewChannelMessage(channel_msg.clone()));
+                                    }
+                                }
+                            }
+                            // --- Mention logic ---
+                            let mentioned = extract_mentions(&content);
+                            if !mentioned.is_empty() {
+                                for username in mentioned {
+                                    if let Some((_, peer)) = peers.iter().find(|(_, p)| {
+                                        if let Some(uid) = p.user_id {
+                                            if let Ok(profile) = futures::executor::block_on(db_get_user_by_id(uid)) {
+                                                profile.username == username
+                                            } else { false }
+                                        } else { false }
+                                    }) {
+                                        if let Some(uid) = peer.user_id {
+                                            if let Ok(_profile) = db_get_user_by_id(uid).await {
+                                                let from_user = user.clone();
+                                                let tx = &peer.tx;
+                                                let _ = tx.send(ServerMessage::MentionNotification {
+                                                    from: from_user,
+                                                    content: content.clone(),
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             }
