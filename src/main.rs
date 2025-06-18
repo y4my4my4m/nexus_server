@@ -851,14 +851,15 @@ async fn db_get_user_by_id(user_id: Uuid) -> Result<UserProfile, String> {
 
 async fn db_register_user(username: &str, password: &str, color: &str, role: &str) -> Result<UserProfile, String> {
     let username = username.to_string();
+    let username_lower = username.to_lowercase();
     let password = password.to_string();
     let color = color.to_string();
     let role = role.to_string();
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        // Check if username exists
-        let mut stmt = conn.prepare("SELECT COUNT(*) FROM users WHERE username = ?1").map_err(|e| e.to_string())?;
-        let exists: i64 = stmt.query_row(params![username], |row| row.get(0)).map_err(|e| e.to_string())?;
+        // Check if username exists (case insensitive)
+        let mut stmt = conn.prepare("SELECT COUNT(*) FROM users WHERE LOWER(username) = ?1").map_err(|e| e.to_string())?;
+        let exists: i64 = stmt.query_row(params![username_lower], |row| row.get(0)).map_err(|e| e.to_string())?;
         if exists > 0 {
             return Err("Username taken".to_string());
         }
@@ -866,11 +867,11 @@ async fn db_register_user(username: &str, password: &str, color: &str, role: &st
         let hash = hash_password(&password).map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT INTO users (id, username, password_hash, color, role) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id.to_string(), username, hash, color, role],
+            params![id.to_string(), username_lower, hash, color, role],
         ).map_err(|e| e.to_string())?;
         Ok(UserProfile {
             id,
-            username,
+            username: username, // Keep original case for display
             hash,
             color: parse_color(&color),
             role: match role.as_str() {
@@ -891,11 +892,12 @@ async fn db_register_user(username: &str, password: &str, color: &str, role: &st
 
 async fn db_login_user(username: &str, password: &str) -> Result<UserProfile, String> {
     let username = username.to_string();
+    let username_lower = username.to_lowercase();
     let password = password.to_string();
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT id, username, password_hash, color, role FROM users WHERE username = ?1").map_err(|e| e.to_string())?;
-        let user = stmt.query_row(params![username], |row| {
+        let mut stmt = conn.prepare("SELECT id, username, password_hash, color, role FROM users WHERE LOWER(username) = ?1").map_err(|e| e.to_string())?;
+        let user = stmt.query_row(params![username_lower], |row| {
             let id: String = row.get(0)?;
             let username: String = row.get(1)?;
             let hash: String = row.get(2)?;
