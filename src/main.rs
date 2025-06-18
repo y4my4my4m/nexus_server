@@ -474,6 +474,33 @@ async fn handle_connection(
                     let role = if is_first_user { "Admin" } else { "User" };
                     match db_register_user(&username, &password, "Green", role).await {
                         Ok(profile) => {
+                            // Add user to default server and all its channels
+                            let default_server_id = {
+                                let conn = Connection::open(DB_PATH).unwrap();
+                                conn.query_row("SELECT id FROM servers LIMIT 1", [], |row| row.get::<_, String>(0)).ok()
+                            };
+                            if let Some(server_id_str) = default_server_id {
+                                let server_id = Uuid::parse_str(&server_id_str).unwrap();
+                                let user_id = profile.id;
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let conn = Connection::open(DB_PATH).unwrap();
+                                    conn.execute(
+                                        "INSERT OR IGNORE INTO server_users (server_id, user_id) VALUES (?1, ?2)",
+                                        params![server_id.to_string(), user_id.to_string()]
+                                    ).ok();
+                                    let mut stmt = conn.prepare("SELECT id FROM channels WHERE server_id = ?1").unwrap();
+                                    let channel_ids: Vec<String> = stmt.query_map(params![server_id.to_string()], |row| row.get::<_, String>(0))
+                                        .unwrap()
+                                        .map(|r| r.unwrap())
+                                        .collect();
+                                    for chan_id in channel_ids {
+                                        conn.execute(
+                                            "INSERT OR IGNORE INTO channel_users (channel_id, user_id) VALUES (?1, ?2)",
+                                            params![chan_id, user_id.to_string()]
+                                        ).ok();
+                                    }
+                                }).await;
+                            }
                             match db_get_user_by_id(profile.id).await {
                                 Ok(full_profile) => {
                                     let user_data = User {
@@ -556,8 +583,30 @@ async fn handle_connection(
     }
     peer_map.lock().await.remove(&conn_id);
     if let Some(user) = current_user {
-        // Broadcast UserLeft on disconnect
-        broadcast(&peer_map, &ServerMessage::UserLeft(user.id)).await;
+        // Broadcast UserLeft on disconnect only to users who share a channel
+        let peers = peer_map.lock().await;
+        // Find all users who share a channel with this user
+        let shared_channel_user_ids: Vec<Uuid> = {
+            let conn = Connection::open(DB_PATH).unwrap();
+            let mut stmt = conn.prepare("SELECT channel_id FROM channel_users WHERE user_id = ?1").unwrap();
+            let user_channels: Vec<String> = stmt.query_map(params![user.id.to_string()], |row| row.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+            let mut user_ids = Vec::new();
+            for chan_id in user_channels {
+                let mut stmt2 = conn.prepare("SELECT user_id FROM channel_users WHERE channel_id = ?1").unwrap();
+                let ids = stmt2.query_map(params![chan_id], |row| row.get::<_, String>(0)).unwrap().map(|r| Uuid::parse_str(&r.unwrap()).unwrap());
+                user_ids.extend(ids);
+            }
+            user_ids.sort();
+            user_ids.dedup();
+            user_ids
+        };
+        for peer in peers.values() {
+            if let Some(uid) = peer.user_id {
+                if shared_channel_user_ids.contains(&uid) {
+                    let _ = peer.tx.send(ServerMessage::UserLeft(user.id));
+                }
+            }
+        }
         info!("{} disconnected.", user.username);
     }
 }
@@ -1167,7 +1216,7 @@ async fn db_create_channel(
         for user_row in user_rows {
             let user_id = user_row.map_err(|e| e.to_string())?;
             conn.execute(
-                "INSERT INTO channel_users (channel_id, user_id) VALUES (?1, ?2)",
+                "INSERT OR IGNORE INTO channel_users (channel_id, user_id) VALUES (?1, ?2)",
                 params![id.to_string(), user_id],
             ).ok();
         }
@@ -1253,7 +1302,7 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT s.id, s.name, s.description, s.public, s.invite_code, s.icon, s.banner, s.owner FROM servers s INNER JOIN server_users su ON s.id = su.server_id WHERE su.user_id = ?1").map_err(|e| e.to_string())?;
-        let server_rows = stmt.query_map(params![user_id], |row| {
+        let server_rows = stmt.query_map(params![user_id.clone()], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, Option<String>>(5)?, row.get::<_, Option<String>>(6)?, row.get::<_, String>(7)?))
         }).map_err(|e| e.to_string())?;
         let mut servers = Vec::new();
@@ -1268,9 +1317,9 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
             let mut users_stmt = conn.prepare("SELECT user_id FROM server_users WHERE server_id = ?1").map_err(|e| e.to_string())?;
             let userlist = users_stmt.query_map(params![id.clone()], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?
                 .map(|r| Uuid::parse_str(&r.unwrap()).unwrap()).collect();
-            // Fetch channels
-            let mut channels_stmt = conn.prepare("SELECT id, name, description FROM channels WHERE server_id = ?1").map_err(|e| e.to_string())?;
-            let channel_rows = channels_stmt.query_map(params![id.clone()], |row| {
+            // Fetch only channels the user is a member of
+            let mut channels_stmt = conn.prepare("SELECT id, name, description FROM channels WHERE server_id = ?1 AND id IN (SELECT channel_id FROM channel_users WHERE user_id = ?2)").map_err(|e| e.to_string())?;
+            let channel_rows = channels_stmt.query_map(params![id.clone(), user_id.clone()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
             }).map_err(|e| e.to_string())?;
             let mut channels = Vec::new();
