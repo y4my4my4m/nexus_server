@@ -1236,7 +1236,7 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
                     if write != 0 { can_write.push(uuid); }
                 }
                 // Fetch messages (last 50)
-                let mut msg_stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp DESC LIMIT 50").map_err(|e| e.to_string())?;
+                let mut msg_stmt = conn.prepare("SELECT id, sent_by, timestamp, content FROM channel_messages WHERE channel_id = ?1 ORDER BY timestamp ASC LIMIT 50").map_err(|e| e.to_string())?;
                 let msg_rows = msg_stmt.query_map(params![chan_id.clone()], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?))
                 }).map_err(|e| e.to_string())?;
