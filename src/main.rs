@@ -381,7 +381,7 @@ async fn handle_connection(
                                     .map(|r| Uuid::parse_str(&r.unwrap()).unwrap())
                                     .collect::<Vec<Uuid>>()
                             };
-                            for (peer_id, peer) in peers.iter() {
+                            for (_peer_id, peer) in peers.iter() {
                                 if let Some(uid) = peer.user_id {
                                     if channel_userlist.contains(&uid) {
                                         let _ = peer.tx.send(ServerMessage::NewChannelMessage(channel_msg.clone()));
@@ -1294,7 +1294,7 @@ async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> Resu
 
 // --- SQLite Server/Channel/Message Management ---
 
-use common::{Server, Channel, ChannelPermissions, ChannelMessage};
+use common::{Server, ChannelMessage};
 
 async fn db_create_server(
     name: &str,
@@ -1590,7 +1590,7 @@ async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
 }
 
 async fn ensure_default_server_exists() -> Result<(), String> {
-    use common::UserRole;
+
     let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM servers", [], |row| row.get(0)).map_err(|e| e.to_string())?;
     if count > 0 {
@@ -1666,11 +1666,6 @@ async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -
     tokio::task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         let mut msgs = Vec::new();
-        
-        // Create a closure that can be used for both cases
-        let process_row = |row: &rusqlite::Row| -> rusqlite::Result<(String, String, String, String, i64)> {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
-        };
         
         // Execute query based on whether we have a before timestamp
         let raw_results: Vec<(String, String, String, String, i64)> = if let Some(before_ts) = before {
