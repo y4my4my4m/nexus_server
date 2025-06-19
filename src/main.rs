@@ -6,8 +6,8 @@ mod util;
 mod auth;
 
 use api::connection::{handle_connection, PeerMap};
-use db::migrations::init_db;
-use db::servers::ensure_default_server_exists;
+// use db::migrations::init_db;
+// use db::servers::ensure_default_server_exists;
 use std::collections::HashMap;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -23,9 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Server listening on: {}", addr);
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
     // Initialize the database
-    let _conn = init_db()?;
+    // let _conn = init_db()?;
     // Ensure default server and channels exist
-    ensure_default_server_exists().await.map_err(|e| format!("Failed to create default server: {}", e))?;
+    // ensure_default_server_exists().await.map_err(|e| format!("Failed to create default server: {}", e))?;
     loop {
         let (stream, _) = listener.accept().await?;
         tokio::spawn(handle_connection(stream, peer_map.clone()));

@@ -6,7 +6,6 @@ use crate::util::parse_color;
 use crate::auth::{hash_password, verify_password};
 use common::{UserProfile, UserRole};
 use rusqlite::{params, Connection};
-use tokio::task;
 
 const DB_PATH: &str = "cyberpunk_bbs.db";
 

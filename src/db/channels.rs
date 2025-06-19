@@ -1,6 +1,7 @@
 // server/src/db/channels.rs
 // Channel DB functions
 
+use common::{ChannelMessage, User};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
@@ -65,4 +66,14 @@ pub async fn db_create_channel_message(
     })
     .await
     .unwrap()
+}
+
+pub async fn db_get_channel_messages(channel_id: Uuid, before: Option<Uuid>) -> Result<(Vec<ChannelMessage>, bool), String> {
+    // TODO: Implement real logic. For now, return empty/default.
+    Ok((Vec::new(), true))
+}
+
+pub async fn db_get_channel_user_list(channel_id: Uuid) -> Result<Vec<User>, String> {
+    // TODO: Implement real logic. For now, return empty/default.
+    Ok(Vec::new())
 }

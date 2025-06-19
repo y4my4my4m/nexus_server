@@ -6,16 +6,7 @@ const DB_PATH: &str = "cyberpunk_bbs.db";
 pub fn init_db() -> SqlResult<Connection> {
     let conn = Connection::open(DB_PATH)?;
     // Users
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            color TEXT NOT NULL,
-            role TEXT NOT NULL
-            )",
-        [],
-    )?;
+    conn.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, color TEXT NOT NULL, role TEXT NOT NULL)",[])?;
     // --- MIGRATION: Add missing profile columns if not present ---
     let columns = [
         ("bio", "TEXT"),
