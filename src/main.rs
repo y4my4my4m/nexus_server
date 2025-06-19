@@ -5,7 +5,7 @@ use argon2::{
     Argon2,
 };
 use common::{
-    ChatMessage, ClientMessage, Forum, Post, ServerMessage, Thread, User,
+    ClientMessage, Forum, Post, ServerMessage, Thread, User,
     UserProfile, UserRole, UserStatus,
 };
 use futures::{SinkExt, StreamExt};
@@ -1637,6 +1637,7 @@ async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
             if from != user_id_str { user_ids.insert(from); }
             if to != user_id_str { user_ids.insert(to); }
         }
+              
                // Fetch user profiles
         let mut users = Vec::new();
         for uid in user_ids {
@@ -1665,49 +1666,61 @@ async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -
     tokio::task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         let mut msgs = Vec::new();
-        let mut stmt;
-        if let Some(before_ts) = before {
-            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE ((from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)) AND timestamp < ?3 ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
+        
+        // Execute query and collect results immediately to avoid lifetime issues
+        let raw_results: Vec<(String, String, String, String, i64)> = if let Some(before_ts) = before {
+            let mut stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE ((from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)) AND timestamp < ?3 ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
             let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone(), before_ts], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
             }).map_err(|e| e.to_string())?;
+            
+            let mut results = Vec::new();
             for row in rows {
-                let (id, from, to, content, timestamp) = row.map_err(|e| e.to_string())?;
-                let from_uuid = Uuid::parse_str(&from).map_err(|e| e.to_string())?;
-                let author_profile = futures::executor::block_on(db_get_user_by_id(from_uuid)).map_err(|e| e.to_string())?;
-                msgs.push(DirectMessage {
-                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
-                    from: from_uuid,
-                    to: Uuid::parse_str(&to).map_err(|e| e.to_string())?,
-                    timestamp,
-                    content,
-                    author_username: author_profile.username,
-                    author_color: author_profile.color,
-                    author_profile_pic: author_profile.profile_pic,
-                });
+                results.push(row.map_err(|e| e.to_string())?);
             }
+            results
         } else {
-            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1) ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
+            let mut stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1) ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
             let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
             }).map_err(|e| e.to_string())?;
+            
+            let mut results = Vec::new();
             for row in rows {
-                let (id, from, to, content, timestamp) = row.map_err(|e| e.to_string())?;
-                let from_uuid = Uuid::parse_str(&from).map_err(|e| e.to_string())?;
-                let author_profile = futures::executor::block_on(db_get_user_by_id(from_uuid)).map_err(|e| e.to_string())?;
-                msgs.push(DirectMessage {
-                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
-                    from: from_uuid,
-                    to: Uuid::parse_str(&to).map_err(|e| e.to_string())?,
-                    timestamp,
-                    content,
-                    author_username: author_profile.username,
-                    author_color: author_profile.color,
-                    author_profile_pic: author_profile.profile_pic,
-                });
+                results.push(row.map_err(|e| e.to_string())?);
             }
+            results
+        };
+        
+        // Process all rows
+        for (id, from, to, content, timestamp) in raw_results {
+            let from_uuid = Uuid::parse_str(&from).map_err(|e| e.to_string())?;
+            
+            // Get author profile synchronously since we're already in spawn_blocking
+            let author_profile = {
+                let mut profile_stmt = conn.prepare("SELECT id, username, password_hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner FROM users WHERE id = ?1").map_err(|e| e.to_string())?;
+                profile_stmt.query_row(params![from], |row| {
+                    let username: String = row.get(1)?;
+                    let color: String = row.get(3)?;
+                    let profile_pic: Option<String> = row.get(10)?;
+                    Ok((username, color, profile_pic))
+                }).map_err(|_| "User not found".to_string())?
+            };
+            
+            msgs.push(DirectMessage {
+                id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                from: from_uuid,
+                to: Uuid::parse_str(&to).map_err(|e| e.to_string())?,
+                timestamp,
+                content,
+                author_username: author_profile.0,
+                author_color: parse_color(&author_profile.1),
+                author_profile_pic: author_profile.2,
+            });
         }
+        
         msgs.reverse(); // Oldest first
+        
         // Check if we've reached the oldest message
         let history_complete = if !msgs.is_empty() {
             let oldest_ts = msgs.first().unwrap().timestamp;
@@ -1717,6 +1730,7 @@ async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -
         } else {
             true
         };
+        
         Ok((msgs, history_complete))
     }).await.unwrap()
 }
