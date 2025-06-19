@@ -13,7 +13,7 @@ pub fn init_db() -> SqlResult<Connection> {
             password_hash TEXT NOT NULL,
             color TEXT NOT NULL,
             role TEXT NOT NULL
-        )",
+            )",
         [],
     )?;
     // --- MIGRATION: Add missing profile columns if not present ---
