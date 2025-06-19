@@ -71,17 +71,24 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::Login { username, password } => {
                                     let result = db::users::db_login_user(&username, &password).await;
-                                    let response = match result {
-                                        Ok(profile) => ServerMessage::AuthSuccess(common::User {
-                                            id: profile.id,
-                                            username: profile.username,
-                                            color: profile.color,
-                                            role: profile.role,
-                                            profile_pic: profile.profile_pic,
-                                            cover_banner: profile.cover_banner,
-                                            status: common::UserStatus::Connected,
-                                        }),
-                                        Err(e) => ServerMessage::AuthFailure(e),
+                                    let response = match &result {
+                                        Ok(profile) => {
+                                            // Set user_id in peer map
+                                            let mut peers = peer_map_task.lock().await;
+                                            if let Some(peer) = peers.get_mut(&peer_id) {
+                                                peer.user_id = Some(profile.id);
+                                            }
+                                            ServerMessage::AuthSuccess(common::User {
+                                                id: profile.id,
+                                                username: profile.username.clone(),
+                                                color: profile.color,
+                                                role: profile.role,
+                                                profile_pic: profile.profile_pic.clone(),
+                                                cover_banner: profile.cover_banner.clone(),
+                                                status: common::UserStatus::Connected,
+                                            })
+                                        }
+                                        Err(e) => ServerMessage::AuthFailure(e.clone()),
                                     };
                                     let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                 }
@@ -97,9 +104,14 @@ pub async fn handle_connection(
                                     let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                 }
                                 ClientMessage::GetServers => {
-                                    let servers = db::servers::db_get_user_servers(peer_map_task.lock().await.get(&peer_id).and_then(|p| p.user_id).unwrap()).await.unwrap_or_default();
-                                    let response = ServerMessage::Servers(servers);
-                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                    if let Some(user_id) = peer_map_task.lock().await.get(&peer_id).and_then(|p| p.user_id) {
+                                        let servers = db::servers::db_get_user_servers(user_id).await.unwrap_or_default();
+                                        let response = ServerMessage::Servers(servers);
+                                        let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                    } else {
+                                        let response = ServerMessage::Notification("Not logged in".to_string(), true);
+                                        let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                    }
                                 }
                                 ClientMessage::GetChannelMessages { channel_id, before } => {
                                     let (messages, history_complete) = db::channels::db_get_channel_messages(channel_id, before).await.unwrap_or_default();
@@ -170,13 +182,27 @@ pub async fn handle_connection(
                                     if let Some(user_id) = peer_map_task.lock().await.get(&peer_id).and_then(|p| p.user_id) {
                                         match db::forums::db_create_post(thread_id, user_id, &content).await {
                                             Ok(_) => {
-                                                let response = ServerMessage::Notification("Post created successfully".to_string(), false);
+                                                // After creating the post, fetch the updated forums and send to client
+                                                let forums = db::forums::db_get_forums().await.unwrap_or_default();
+                                                let response = ServerMessage::Forums(forums);
                                                 let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                             }
                                             Err(e) => {
                                                 let response = ServerMessage::Notification(format!("Failed to create post: {}", e), true);
                                                 let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                             }
+                                        }
+                                    }
+                                }
+                                ClientMessage::GetProfile { user_id } => {
+                                    match db::users::db_get_user_profile(user_id).await {
+                                        Ok(profile) => {
+                                            let response = ServerMessage::Profile(profile);
+                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                        }
+                                        Err(e) => {
+                                            let response = ServerMessage::Notification(format!("Failed to load profile: {}", e), true);
+                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                         }
                                     }
                                 }
