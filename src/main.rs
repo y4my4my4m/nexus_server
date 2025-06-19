@@ -233,7 +233,7 @@ async fn handle_connection(
                     let peers = peer_map.lock().await;
                     for peer in peers.values() {
                         if let Some(uid) = peer.user_id {
-                            if uid == to_user_id {
+                            if uid == to_user_id || uid == user.id {
                                 let _ = peer.tx.send(ServerMessage::DirectMessage(dm.clone()));
                             }
                         }
@@ -1667,32 +1667,33 @@ async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         let mut msgs = Vec::new();
         
-        // Execute query and collect results immediately to avoid lifetime issues
+        // Create a closure that can be used for both cases
+        let process_row = |row: &rusqlite::Row| -> rusqlite::Result<(String, String, String, String, i64)> {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
+        };
+        
+        // Execute query based on whether we have a before timestamp
         let raw_results: Vec<(String, String, String, String, i64)> = if let Some(before_ts) = before {
             let mut stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE ((from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)) AND timestamp < ?3 ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
-            let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone(), before_ts], |row| {
+            let rows_iter = stmt.query_map(params![user1_str.clone(), user2_str.clone(), before_ts], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
             }).map_err(|e| e.to_string())?;
-            
             let mut results = Vec::new();
-            for row in rows {
+            for row in rows_iter {
                 results.push(row.map_err(|e| e.to_string())?);
             }
             results
         } else {
             let mut stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1) ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
-            let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone()], |row| {
+            let rows_iter = stmt.query_map(params![user1_str.clone(), user2_str.clone()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
             }).map_err(|e| e.to_string())?;
-            
             let mut results = Vec::new();
-            for row in rows {
+            for row in rows_iter {
                 results.push(row.map_err(|e| e.to_string())?);
             }
             results
         };
-        
-        // Process all rows
         for (id, from, to, content, timestamp) in raw_results {
             let from_uuid = Uuid::parse_str(&from).map_err(|e| e.to_string())?;
             
