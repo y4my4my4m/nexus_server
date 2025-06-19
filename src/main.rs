@@ -210,6 +210,18 @@ async fn handle_connection(
                             return;
                         }
                     };
+                    // Fetch author info for the message
+                    let author_profile = db_get_user_by_id(user.id).await.unwrap();
+                    let dm = common::DirectMessage {
+                        id: dm_id,
+                        from: user.id,
+                        to: to_user_id,
+                        timestamp: now,
+                        content: content.clone(),
+                        author_username: author_profile.username,
+                        author_color: author_profile.color,
+                        author_profile_pic: author_profile.profile_pic,
+                    };
                     // Create notification for recipient, referencing the DM UUID
                     let _ = db_insert_notification(
                         to_user_id,
@@ -222,10 +234,7 @@ async fn handle_connection(
                     for peer in peers.values() {
                         if let Some(uid) = peer.user_id {
                             if uid == to_user_id {
-                                let _ = peer.tx.send(ServerMessage::DirectMessage {
-                                    from: from_user.clone(),
-                                    content: content.clone(),
-                                });
+                                let _ = peer.tx.send(ServerMessage::DirectMessage(dm.clone()));
                             }
                         }
                     }
@@ -1628,7 +1637,7 @@ async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
             if from != user_id_str { user_ids.insert(from); }
             if to != user_id_str { user_ids.insert(to); }
         }
-        // Fetch user profiles
+               // Fetch user profiles
         let mut users = Vec::new();
         for uid in user_ids {
             let uuid = Uuid::parse_str(&uid).map_err(|e| e.to_string())?;
@@ -1658,7 +1667,7 @@ async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -
         let mut msgs = Vec::new();
         let mut stmt;
         if let Some(before_ts) = before {
-            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE ((from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)) AND timestamp < ?3 ORDER BY timestamp DESC LIMIT 50").map_err(|e| e.to_string())?;
+            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE ((from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)) AND timestamp < ?3 ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
             let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone(), before_ts], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
             }).map_err(|e| e.to_string())?;
@@ -1678,7 +1687,7 @@ async fn db_get_direct_messages(user1: Uuid, user2: Uuid, before: Option<i64>) -
                 });
             }
         } else {
-            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1) ORDER BY timestamp DESC LIMIT 50").map_err(|e| e.to_string())?;
+            stmt = conn.prepare("SELECT id, from_user_id, to_user_id, content, timestamp FROM direct_messages WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1) ORDER BY timestamp DESC LIMIT 20").map_err(|e| e.to_string())?;
             let rows = stmt.query_map(params![user1_str.clone(), user2_str.clone()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?))
             }).map_err(|e| e.to_string())?;
