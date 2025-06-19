@@ -25,6 +25,7 @@ pub async fn db_insert_notification(user_id: Uuid, notif_type: &str, related_id:
 }
 
 pub async fn db_get_notifications(user_id: Uuid, before: Option<i64>) -> Result<(Vec<Notification>, bool), String> {
+    use common::{Notification, NotificationType};
     let user_id = user_id.to_string();
     tokio::task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
@@ -65,7 +66,7 @@ pub async fn db_get_notifications(user_id: Uuid, before: Option<i64>) -> Result<
                 extra,
             });
         }
-        notifications.reverse();
+        notifications.reverse(); // Oldest first
         let history_complete = notifications.len() < 50;
         Ok((notifications, history_complete))
     }).await.unwrap()
