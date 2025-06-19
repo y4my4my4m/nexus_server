@@ -1,18 +1,21 @@
 // server/src/auth.rs
 // Password hashing/verification and authentication helpers
 
-use argon2::{self, Config};
-use rand::Rng;
-use std::num::NonZeroU32;
+use argon2::{self, Argon2, password_hash::{PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng, PasswordHash}};
 
-pub fn hash_password(password: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let salt: [u8; 32] = rand::thread_rng().gen();
-    let config = Config::default();
-    let hash = argon2::hash_encoded(password.as_bytes(), &salt, &config)?;
-
-    Ok(hash)
+pub fn hash_password(password: &str) -> Result<String, String> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    argon2.hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| e.to_string())
 }
 
 pub fn verify_password(hash: &str, password: &str) -> bool {
-    argon2::verify_encoded(hash, password.as_bytes()).unwrap_or(false)
+    let parsed_hash = PasswordHash::new(hash);
+    if let Ok(parsed_hash) = parsed_hash {
+        Argon2::default().verify_password(password.as_bytes(), &parsed_hash).is_ok()
+    } else {
+        false
+    }
 }
