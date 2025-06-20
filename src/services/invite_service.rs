@@ -141,18 +141,22 @@ impl InviteService {
             add_user_to_server(invite.server.id, user_id).await?;
         }
 
+        // Fetch the actual user data
+        let user = db_get_user_by_id(user_id).await?
+            .ok_or_else(|| ServerError::NotFound("User not found".to_string()))?;
+
         // Notify the original sender about the response
         let response_message = ServerMessage::ServerInviteResponse {
             invite_id,
             accepted: accept,
             user: User {
-                id: user_id,
-                username: "User".to_string(), // We'll need to get the actual user data
-                color: Color::White,
-                role: common::UserRole::User,
-                profile_pic: None,
-                cover_banner: None,
-                status: common::UserStatus::Connected,
+                id: user.id,
+                username: user.username,
+                color: user.color,
+                role: user.role,
+                profile_pic: user.profile_pic,
+                cover_banner: user.cover_banner,
+                status: user.status,
             },
         };
         
