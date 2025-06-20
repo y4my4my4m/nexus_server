@@ -17,7 +17,7 @@ pub async fn db_count_users() -> Result<i64, String> {
         Ok(count)
     })
     .await
-    .unwrap()
+    .map_err(|e| e.to_string())?
 }
 
 pub async fn db_register_user(

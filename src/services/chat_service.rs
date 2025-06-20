@@ -46,7 +46,7 @@ impl ChatService {
         BroadcastService::broadcast_to_channel_users(peer_map, &user_ids, &message).await;
 
         // Handle mentions
-        let mentioned_users = Self::extract_mentions(content);
+        let mentioned_users = crate::util::extract_mentions(content);
         if !mentioned_users.is_empty() {
             Self::handle_mentions(user, content, &mentioned_users, peer_map).await;
         }
@@ -146,20 +146,6 @@ impl ChatService {
         }
 
         Ok(users)
-    }
-
-    /// Extract usernames mentioned in a message (@username)
-    fn extract_mentions(content: &str) -> Vec<String> {
-        let mut mentions = Vec::new();
-        let re = regex::Regex::new(r"@([a-zA-Z0-9_]+)").unwrap();
-        
-        for cap in re.captures_iter(content) {
-            if let Some(username) = cap.get(1) {
-                mentions.push(username.as_str().to_string());
-            }
-        }
-        
-        mentions
     }
 
     /// Handle mention notifications
