@@ -21,7 +21,7 @@ impl ChatService {
         let timestamp = chrono::Utc::now().timestamp();
         
         // Store message in database
-        let message_id = messages::db_create_channel_message(
+        let message_id = channels::db_create_channel_message(
             channel_id, user.id, timestamp, content
         ).await.map_err(|e| ServerError::Database(e))?;
 
@@ -99,9 +99,9 @@ impl ChatService {
     pub async fn get_channel_messages(
         channel_id: Uuid,
         before: Option<Uuid>,
-        limit: usize,
+        _limit: usize,
     ) -> Result<(Vec<ChannelMessage>, bool)> {
-        messages::db_get_channel_messages(channel_id, before, limit).await
+        channels::db_get_channel_messages(channel_id, before).await
             .map_err(|e| ServerError::Database(e))
     }
 

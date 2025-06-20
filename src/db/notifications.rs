@@ -43,15 +43,17 @@ pub async fn db_get_notifications(
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         
         let mut notifications = Vec::new();
-        let query = if let Some(before_ts) = before {
+        
+        // Use separate if/else blocks to avoid type conflicts
+        if let Some(before_ts) = before {
             let mut stmt = conn.prepare(
                 "SELECT id, type, related_id, created_at, read, extra 
                  FROM notifications 
-                 WHERE user_id = ?1 AND created_at < ?2 
+                 WHERE user_id = ? AND created_at < ? 
                  ORDER BY created_at DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
-            stmt.query_map(params![user_id_str, before_ts], |row| {
+            let rows = stmt.query_map(params![user_id_str, before_ts], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -60,16 +62,38 @@ pub async fn db_get_notifications(
                     row.get::<_, i32>(4)?,
                     row.get::<_, Option<String>>(5)?,
                 ))
-            }).map_err(|e| e.to_string())?
+            }).map_err(|e| e.to_string())?;
+
+            for row in rows {
+                let (id, notif_type, related_id, created_at, read, extra) = row.map_err(|e| e.to_string())?;
+                
+                let notification_type = match notif_type.as_str() {
+                    "ThreadReply" => NotificationType::ThreadReply,
+                    "DM" => NotificationType::DM,
+                    "Announcement" => NotificationType::Announcement,
+                    "Mention" => NotificationType::Mention,
+                    other => NotificationType::Other(other.to_string()),
+                };
+                
+                notifications.push(Notification {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    user_id: Uuid::parse_str(&user_id_str).map_err(|e| e.to_string())?,
+                    notif_type: notification_type,
+                    related_id: Uuid::parse_str(&related_id).map_err(|e| e.to_string())?,
+                    created_at,
+                    read: read != 0,
+                    extra,
+                });
+            }
         } else {
             let mut stmt = conn.prepare(
                 "SELECT id, type, related_id, created_at, read, extra 
                  FROM notifications 
-                 WHERE user_id = ?1 
+                 WHERE user_id = ? 
                  ORDER BY created_at DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
-            stmt.query_map(params![user_id_str], |row| {
+            let rows = stmt.query_map(params![user_id_str], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -78,29 +102,29 @@ pub async fn db_get_notifications(
                     row.get::<_, i32>(4)?,
                     row.get::<_, Option<String>>(5)?,
                 ))
-            }).map_err(|e| e.to_string())?
-        };
+            }).map_err(|e| e.to_string())?;
 
-        for row in query {
-            let (id, notif_type, related_id, created_at, read, extra) = row.map_err(|e| e.to_string())?;
-            
-            let notification_type = match notif_type.as_str() {
-                "ThreadReply" => NotificationType::ThreadReply,
-                "DM" => NotificationType::DM,
-                "Announcement" => NotificationType::Announcement,
-                "Mention" => NotificationType::Mention,
-                other => NotificationType::Other(other.to_string()),
-            };
-            
-            notifications.push(Notification {
-                id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
-                user_id: Uuid::parse_str(&user_id_str).map_err(|e| e.to_string())?,
-                notif_type: notification_type,
-                related_id: Uuid::parse_str(&related_id).map_err(|e| e.to_string())?,
-                created_at,
-                read: read != 0,
-                extra,
-            });
+            for row in rows {
+                let (id, notif_type, related_id, created_at, read, extra) = row.map_err(|e| e.to_string())?;
+                
+                let notification_type = match notif_type.as_str() {
+                    "ThreadReply" => NotificationType::ThreadReply,
+                    "DM" => NotificationType::DM,
+                    "Announcement" => NotificationType::Announcement,
+                    "Mention" => NotificationType::Mention,
+                    other => NotificationType::Other(other.to_string()),
+                };
+                
+                notifications.push(Notification {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    user_id: Uuid::parse_str(&user_id_str).map_err(|e| e.to_string())?,
+                    notif_type: notification_type,
+                    related_id: Uuid::parse_str(&related_id).map_err(|e| e.to_string())?,
+                    created_at,
+                    read: read != 0,
+                    extra,
+                });
+            }
         }
 
         notifications.reverse(); // Oldest first

@@ -39,4 +39,10 @@ impl From<tokio::task::JoinError> for ServerError {
     }
 }
 
+impl From<String> for ServerError {
+    fn from(err: String) -> Self {
+        ServerError::Internal(err)
+    }
+}
+
 pub type Result<T> = std::result::Result<T, ServerError>;

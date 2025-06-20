@@ -37,7 +37,7 @@ pub async fn db_get_direct_messages(
     user1_id: Uuid,
     user2_id: Uuid,
     before: Option<i64>,
-    limit: usize,
+    _limit: usize,
 ) -> Result<(Vec<DirectMessage>, bool), String> {
     let user1_str = user1_id.to_string();
     let user2_str = user2_id.to_string();
@@ -46,17 +46,20 @@ pub async fn db_get_direct_messages(
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         
         let mut messages = Vec::new();
-        let query = if let Some(before_ts) = before {
+        
+        // Use separate functions to avoid type conflicts
+        if let Some(before_ts) = before {
+            // Query with timestamp filter
             let mut stmt = conn.prepare(
                 "SELECT dm.id, dm.from_user_id, dm.to_user_id, dm.content, dm.timestamp, u.username, u.color, u.profile_pic
                  FROM direct_messages dm
                  INNER JOIN users u ON dm.from_user_id = u.id
-                 WHERE ((dm.from_user_id = ?1 AND dm.to_user_id = ?2) OR (dm.from_user_id = ?2 AND dm.to_user_id = ?1))
-                 AND dm.timestamp < ?3
-                 ORDER BY dm.timestamp DESC LIMIT ?4"
+                 WHERE ((dm.from_user_id = ? AND dm.to_user_id = ?) OR (dm.from_user_id = ? AND dm.to_user_id = ?))
+                 AND dm.timestamp < ?
+                 ORDER BY dm.timestamp DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
-            stmt.query_map(params![user1_str, user2_str, before_ts, limit], |row| {
+            let rows = stmt.query_map(params![user1_str, user2_str, user2_str, user1_str, before_ts], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -67,44 +70,61 @@ pub async fn db_get_direct_messages(
                     row.get::<_, String>(6)?,
                     row.get::<_, Option<String>>(7)?,
                 ))
-            }).map_err(|e| e.to_string())?
-        } else {
-            let mut stmt = conn.prepare(
-                "SELECT dm.id, dm.from_user_id, dm.to_user_id, dm.content, dm.timestamp, u.username, u.color, u.profile_pic
-                 FROM direct_messages dm
-                 INNER JOIN users u ON dm.from_user_id = u.id
-                 WHERE (dm.from_user_id = ?1 AND dm.to_user_id = ?2) OR (dm.from_user_id = ?2 AND dm.to_user_id = ?1)
-                 ORDER BY dm.timestamp DESC LIMIT ?3"
-            ).map_err(|e| e.to_string())?;
-            
-            stmt.query_map(params![user1_str, user2_str, limit], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                ))
-            }).map_err(|e| e.to_string())?
-        };
+            }).map_err(|e| e.to_string())?;
 
-        for row in query {
-            let (id, from_user_id, to_user_id, content, timestamp, username, color, profile_pic) = 
-                row.map_err(|e| e.to_string())?;
+            for row in rows {
+                let (id, from_user_id, to_user_id, content, timestamp, username, color, profile_pic) = 
+                    row.map_err(|e| e.to_string())?;
+                
+                messages.push(DirectMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    from: Uuid::parse_str(&from_user_id).map_err(|e| e.to_string())?,
+                    to: Uuid::parse_str(&to_user_id).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: username,
+                    author_color: parse_color(&color),
+                    author_profile_pic: profile_pic,
+                });
+            }
+        } else {
+            // Query without timestamp filter
+            let mut stmt = conn.prepare(
+                "SELECT dm.id, dm.from_user_id, dm.to_user_id, dm.content, dm.timestamp, u.username, u.color, u.profile_pic
+                 FROM direct_messages dm
+                 INNER JOIN users u ON dm.from_user_id = u.id
+                 WHERE (dm.from_user_id = ? AND dm.to_user_id = ?) OR (dm.from_user_id = ? AND dm.to_user_id = ?)
+                 ORDER BY dm.timestamp DESC LIMIT 50"
+            ).map_err(|e| e.to_string())?;
             
-            messages.push(DirectMessage {
-                id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
-                from: Uuid::parse_str(&from_user_id).map_err(|e| e.to_string())?,
-                to: Uuid::parse_str(&to_user_id).map_err(|e| e.to_string())?,
-                timestamp,
-                content,
-                author_username: username,
-                author_color: parse_color(&color),
-                author_profile_pic: profile_pic,
-            });
+            let rows = stmt.query_map(params![user1_str, user2_str, user2_str, user1_str], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                ))
+            }).map_err(|e| e.to_string())?;
+
+            for row in rows {
+                let (id, from_user_id, to_user_id, content, timestamp, username, color, profile_pic) = 
+                    row.map_err(|e| e.to_string())?;
+                
+                messages.push(DirectMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    from: Uuid::parse_str(&from_user_id).map_err(|e| e.to_string())?,
+                    to: Uuid::parse_str(&to_user_id).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: username,
+                    author_color: parse_color(&color),
+                    author_profile_pic: profile_pic,
+                });
+            }
         }
 
         messages.reverse(); // Oldest first
@@ -114,9 +134,9 @@ pub async fn db_get_direct_messages(
             let oldest_ts = messages.first().unwrap().timestamp;
             let mut min_stmt = conn.prepare(
                 "SELECT MIN(timestamp) FROM direct_messages 
-                 WHERE (from_user_id = ?1 AND to_user_id = ?2) OR (from_user_id = ?2 AND to_user_id = ?1)"
+                 WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)"
             ).map_err(|e| e.to_string())?;
-            let min_ts: i64 = min_stmt.query_row(params![user1_str, user2_str], |row| row.get(0))
+            let min_ts: i64 = min_stmt.query_row(params![user1_str, user2_str, user2_str, user1_str], |row| row.get(0))
                 .unwrap_or(oldest_ts);
             oldest_ts <= min_ts
         } else {
@@ -139,14 +159,14 @@ pub async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT 
                 CASE 
-                    WHEN from_user_id = ?1 THEN to_user_id 
+                    WHEN from_user_id = ? THEN to_user_id 
                     ELSE from_user_id 
                 END as other_user_id
              FROM direct_messages 
-             WHERE from_user_id = ?1 OR to_user_id = ?1"
+             WHERE from_user_id = ? OR to_user_id = ?"
         ).map_err(|e| e.to_string())?;
 
-        let user_id_rows = stmt.query_map(params![user_id_str], |row| {
+        let user_id_rows = stmt.query_map(params![user_id_str, user_id_str, user_id_str], |row| {
             row.get::<_, String>(0)
         }).map_err(|e| e.to_string())?;
 
@@ -157,7 +177,7 @@ pub async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
             
             // Get user profile
             let mut user_stmt = conn.prepare(
-                "SELECT username, color, role, profile_pic, cover_banner FROM users WHERE id = ?1"
+                "SELECT username, color, role, profile_pic, cover_banner FROM users WHERE id = ?"
             ).map_err(|e| e.to_string())?;
             
             if let Ok((username, color, role, profile_pic, cover_banner)) = user_stmt.query_row(

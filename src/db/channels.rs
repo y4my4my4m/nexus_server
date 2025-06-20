@@ -70,37 +70,115 @@ pub async fn db_create_channel_message(
     .unwrap()
 }
 
-pub async fn db_get_channel_messages(channel_id: Uuid, before: Option<Uuid>) -> Result<(Vec<ChannelMessage>, bool), String> {
+pub async fn db_get_channel_messages(
+    channel_id: Uuid,
+    before: Option<Uuid>,
+) -> Result<(Vec<ChannelMessage>, bool), String> {
     let channel_id_str = channel_id.to_string();
-    let before_ts: Option<i64> = None; // You can add pagination support if needed
-    tokio::task::spawn_blocking(move || {
+
+    task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        let mut query = String::from("SELECT m.id, m.channel_id, m.sent_by, m.timestamp, m.content, u.username, u.color, u.profile_pic FROM channel_messages m INNER JOIN users u ON m.sent_by = u.id WHERE m.channel_id = ?1");
-        let mut params_vec: Vec<&dyn rusqlite::ToSql> = vec![&channel_id_str];
-        if let Some(_before) = before {
-            // If you want to support pagination by message id, you can add logic here
+        
+        let mut messages = Vec::new();
+        
+        // Use separate if/else blocks to avoid type conflicts
+        if let Some(before_id) = before {
+            // Get timestamp of the before_id message first
+            let before_id_str = before_id.to_string();
+            let mut ts_stmt = conn.prepare("SELECT timestamp FROM channel_messages WHERE id = ?")
+                .map_err(|e| e.to_string())?;
+            let ts: i64 = ts_stmt.query_row(params![before_id_str], |row| row.get(0))
+                .map_err(|e| e.to_string())?;
+            
+            let mut stmt = conn.prepare(
+                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
+                 FROM channel_messages cm
+                 INNER JOIN users u ON cm.sent_by = u.id
+                 WHERE cm.channel_id = ? AND cm.timestamp < ?
+                 ORDER BY cm.timestamp DESC LIMIT 50"
+            ).map_err(|e| e.to_string())?;
+            
+            let rows = stmt.query_map(params![channel_id_str, ts], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            }).map_err(|e| e.to_string())?;
+
+            for row in rows {
+                let (id, sent_by, timestamp, content, username, color, profile_pic) = row.map_err(|e| e.to_string())?;
+                
+                messages.push(ChannelMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    channel_id,
+                    sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: username,
+                    author_color: parse_color(&color),
+                    author_profile_pic: profile_pic,
+                });
+            }
+        } else {
+            let mut stmt = conn.prepare(
+                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
+                 FROM channel_messages cm
+                 INNER JOIN users u ON cm.sent_by = u.id
+                 WHERE cm.channel_id = ?
+                 ORDER BY cm.timestamp DESC LIMIT 50"
+            ).map_err(|e| e.to_string())?;
+            
+            let rows = stmt.query_map(params![channel_id_str], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            }).map_err(|e| e.to_string())?;
+
+            for row in rows {
+                let (id, sent_by, timestamp, content, username, color, profile_pic) = row.map_err(|e| e.to_string())?;
+                
+                messages.push(ChannelMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    channel_id,
+                    sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: username,
+                    author_color: parse_color(&color),
+                    author_profile_pic: profile_pic,
+                });
+            }
         }
-        query.push_str(" ORDER BY m.timestamp DESC LIMIT 50");
-        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(&params_vec[..], |row| {
-            Ok(ChannelMessage {
-                id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
-                channel_id: Uuid::parse_str(&row.get::<_, String>(1)?).unwrap(),
-                sent_by: Uuid::parse_str(&row.get::<_, String>(2)?).unwrap(),
-                timestamp: row.get(3)?,
-                content: row.get(4)?,
-                author_username: row.get(5)?,
-                author_color: crate::util::parse_color(&row.get::<_, String>(6)?),
-                author_profile_pic: row.get(7).ok(),
-            })
-        }).map_err(|e| e.to_string())?;
-        let mut messages: Vec<ChannelMessage> = Vec::new();
-        for row in rows {
-            messages.push(row.map_err(|e| e.to_string())?);
-        }
+
         messages.reverse(); // Oldest first
-        Ok((messages, true))
-    }).await.unwrap()
+        
+        // Check if we've reached the oldest message
+        let history_complete = if !messages.is_empty() {
+            let oldest_ts = messages.first().unwrap().timestamp;
+            let mut min_stmt = conn.prepare("SELECT MIN(timestamp) FROM channel_messages WHERE channel_id = ?")
+                .map_err(|e| e.to_string())?;
+            let min_ts: i64 = min_stmt.query_row(params![channel_id_str], |row| row.get(0))
+                .unwrap_or(oldest_ts);
+            oldest_ts <= min_ts
+        } else {
+            true
+        };
+
+        Ok((messages, history_complete))
+    })
+    .await
+    .unwrap()
 }
 
 pub async fn db_get_channel_user_list(channel_id: Uuid) -> Result<Vec<User>, String> {
