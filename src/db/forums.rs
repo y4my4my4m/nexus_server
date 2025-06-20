@@ -1,5 +1,3 @@
-// server/src/db/forums.rs
-
 use crate::util::parse_color;
 use common::{Forum, Thread, Post, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};

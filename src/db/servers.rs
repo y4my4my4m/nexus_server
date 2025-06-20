@@ -1,5 +1,3 @@
-// server/src/db/servers.rs
-
 use common::Server;
 use rusqlite::{params, Connection};
 use tokio::task;

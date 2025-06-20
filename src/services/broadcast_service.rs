@@ -1,5 +1,3 @@
-// server/src/services/broadcast_service.rs
-
 use crate::api::connection::PeerMap;
 use common::{ServerMessage, User};
 use std::collections::HashSet;

@@ -1,5 +1,3 @@
-// server/src/services/mod.rs
-
 pub mod user_service;
 pub mod chat_service;
 pub mod notification_service;

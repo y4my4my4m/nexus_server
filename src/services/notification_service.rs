@@ -1,5 +1,3 @@
-// server/src/services/notification_service.rs
-
 use crate::db::notifications;
 use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;

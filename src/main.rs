@@ -1,5 +1,3 @@
-// server/src/main.rs
-
 mod api;
 mod db;
 mod util;
@@ -43,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Start TCP listener
     let listener = TcpListener::bind(&addr).await?;
-    info!("🚀 Cyberpunk BBS Server listening on: {}", addr);
+    info!("🚀 Nexus Server listening on: {}", addr);
     
     // Initialize peer map for connection management
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));

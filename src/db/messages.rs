@@ -1,5 +1,3 @@
-// server/src/db/messages.rs
-
 use crate::util::parse_color;
 use common::{DirectMessage, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};

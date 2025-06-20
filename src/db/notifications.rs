@@ -1,5 +1,3 @@
-// server/src/db/notifications.rs
-
 use common::{Notification, NotificationType};
 use rusqlite::{params, Connection};
 use tokio::task;

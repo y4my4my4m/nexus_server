@@ -1,5 +1,3 @@
-// server/src/db/users.rs
-
 use crate::auth::{hash_password, verify_password};
 use crate::util::parse_color;
 use common::{UserProfile, UserRole};

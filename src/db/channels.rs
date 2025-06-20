@@ -1,4 +1,3 @@
-// server/src/db/channels.rs
 // Channel DB functions
 
 use crate::util::parse_color;

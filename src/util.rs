@@ -1,4 +1,3 @@
-// server/src/util.rs
 // Utility functions (color parsing, mention extraction, etc)
 
 use regex::Regex;

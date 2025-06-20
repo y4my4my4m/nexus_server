@@ -1,5 +1,3 @@
-// server/src/db/mod.rs
-
 pub mod migrations;
 pub mod users;
 pub mod channels;

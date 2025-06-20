@@ -1,5 +1,3 @@
-// server/src/services/chat_service.rs
-
 use crate::db::{channels, messages};
 use crate::errors::{Result, ServerError};
 use crate::services::{BroadcastService, NotificationService};

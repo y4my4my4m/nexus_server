@@ -1,5 +1,3 @@
-// server/src/db/migrations.rs
-
 use crate::errors::{Result, ServerError};
 use rusqlite::{Connection, Result as SqlResult};
 use tracing::info;

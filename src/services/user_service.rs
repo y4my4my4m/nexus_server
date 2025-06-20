@@ -1,5 +1,3 @@
-// server/src/services/user_service.rs
-
 use crate::db::users;
 use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;
