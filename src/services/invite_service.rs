@@ -92,6 +92,7 @@ impl InviteService {
                 }
                 Err(e) => {
                     error!("Failed to get user profile for invite DM: {:?}", e);
+                    return Err(ServerError::Database(e));
                 }
             }
             
