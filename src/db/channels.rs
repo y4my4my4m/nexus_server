@@ -1,8 +1,10 @@
 // server/src/db/channels.rs
 // Channel DB functions
 
-use common::{ChannelMessage, User};
+use crate::util::parse_color;
+use common::{ChannelMessage, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};
+use tokio::task;
 use uuid::Uuid;
 
 const DB_PATH: &str = "cyberpunk_bbs.db";
@@ -103,28 +105,122 @@ pub async fn db_get_channel_messages(channel_id: Uuid, before: Option<Uuid>) -> 
 
 pub async fn db_get_channel_user_list(channel_id: Uuid) -> Result<Vec<User>, String> {
     let channel_id_str = channel_id.to_string();
-    tokio::task::spawn_blocking(move || {
+
+    task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT u.id, u.username, u.color, u.role, u.profile_pic, u.cover_banner FROM channel_users cu INNER JOIN users u ON cu.user_id = u.id WHERE cu.channel_id = ?1 ORDER BY u.username ASC").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map(params![channel_id_str], |row| {
-            Ok(User {
-                id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
-                username: row.get(1)?,
-                color: crate::util::parse_color(&row.get::<_, String>(2)?),
-                role: match row.get::<_, String>(3)?.as_str() {
-                    "Admin" => common::UserRole::Admin,
-                    "Moderator" => common::UserRole::Moderator,
-                    _ => common::UserRole::User,
-                },
-                profile_pic: row.get(4).ok(),
-                cover_banner: row.get(5).ok(),
-                status: common::UserStatus::Offline,
-            })
+        
+        let mut stmt = conn.prepare(
+            "SELECT u.id, u.username, u.color, u.role, u.profile_pic, u.cover_banner 
+             FROM users u 
+             INNER JOIN channel_users cu ON u.id = cu.user_id 
+             WHERE cu.channel_id = ?1 
+             ORDER BY u.username"
+        ).map_err(|e| e.to_string())?;
+
+        let user_rows = stmt.query_map(params![channel_id_str], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
         }).map_err(|e| e.to_string())?;
+
         let mut users = Vec::new();
-        for row in rows {
-            users.push(row.map_err(|e| e.to_string())?);
+        for user_row in user_rows {
+            let (id, username, color, role, profile_pic, cover_banner) = user_row.map_err(|e| e.to_string())?;
+            
+            users.push(User {
+                id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                username,
+                color: parse_color(&color),
+                role: match role.as_str() {
+                    "Admin" => UserRole::Admin,
+                    "Moderator" => UserRole::Moderator,
+                    _ => UserRole::User,
+                },
+                profile_pic,
+                cover_banner,
+                status: UserStatus::Offline, // Will be updated by service layer
+            });
         }
+
         Ok(users)
-    }).await.unwrap()
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn get_users_sharing_channels_with(user_id: Uuid) -> Result<Vec<Uuid>, String> {
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT cu2.user_id 
+             FROM channel_users cu1 
+             INNER JOIN channel_users cu2 ON cu1.channel_id = cu2.channel_id 
+             WHERE cu1.user_id = ?1 AND cu2.user_id != ?1"
+        ).map_err(|e| e.to_string())?;
+
+        let user_rows = stmt.query_map(params![user_id_str], |row| {
+            row.get::<_, String>(0)
+        }).map_err(|e| e.to_string())?;
+
+        let mut user_ids = Vec::new();
+        for user_row in user_rows {
+            let user_id_str = user_row.map_err(|e| e.to_string())?;
+            user_ids.push(Uuid::parse_str(&user_id_str).map_err(|e| e.to_string())?);
+        }
+
+        Ok(user_ids)
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn get_server_channels(server_id: Uuid) -> Result<Vec<Uuid>, String> {
+    let server_id_str = server_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        let mut stmt = conn.prepare("SELECT id FROM channels WHERE server_id = ?1")
+            .map_err(|e| e.to_string())?;
+
+        let channel_rows = stmt.query_map(params![server_id_str], |row| {
+            row.get::<_, String>(0)
+        }).map_err(|e| e.to_string())?;
+
+        let mut channel_ids = Vec::new();
+        for channel_row in channel_rows {
+            let channel_id_str = channel_row.map_err(|e| e.to_string())?;
+            channel_ids.push(Uuid::parse_str(&channel_id_str).map_err(|e| e.to_string())?);
+        }
+
+        Ok(channel_ids)
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn add_user_to_channel(channel_id: Uuid, user_id: Uuid) -> Result<(), String> {
+    let channel_id_str = channel_id.to_string();
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_users (channel_id, user_id) VALUES (?1, ?2)",
+            params![channel_id_str, user_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
 }

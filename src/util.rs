@@ -24,6 +24,17 @@ pub fn parse_color(color_str: &str) -> Color {
         "LightMagenta" => Color::LightMagenta,
         "LightCyan" => Color::LightCyan,
         "White" => Color::White,
+        // Handle hex colors
+        hex if hex.starts_with('#') && hex.len() == 7 => {
+            if let Ok(r) = u8::from_str_radix(&hex[1..3], 16) {
+                if let Ok(g) = u8::from_str_radix(&hex[3..5], 16) {
+                    if let Ok(b) = u8::from_str_radix(&hex[5..7], 16) {
+                        return Color::Rgb(r, g, b);
+                    }
+                }
+            }
+            Color::Reset
+        }
         _ => Color::Reset,
     }
 }
