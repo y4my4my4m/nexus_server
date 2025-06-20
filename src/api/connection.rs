@@ -162,7 +162,7 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::SendServerInvite { to_user_id, server_id } => {
                                     if let Some(user) = &current_user {
-                                        match crate::services::InviteService::send_server_invite(user.id, to_user_id, server_id).await {
+                                        match crate::services::InviteService::send_server_invite(user.id, to_user_id, server_id, &peer_map_task).await {
                                             Ok(_) => {
                                                 let response = ServerMessage::Notification("Server invite sent successfully!".to_string(), false);
                                                 let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
@@ -176,7 +176,7 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::RespondToServerInvite { invite_id, accept } => {
                                     if let Some(user) = &current_user {
-                                        match crate::services::InviteService::respond_to_invite(invite_id, user.id, accept).await {
+                                        match crate::services::InviteService::respond_to_invite(invite_id, user.id, accept, &peer_map_task).await {
                                             Ok(_) => {
                                                 let action = if accept { "accepted" } else { "declined" };
                                                 let response = ServerMessage::Notification(format!("Server invite {} successfully!", action), false);
