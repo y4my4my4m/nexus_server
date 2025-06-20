@@ -11,6 +11,7 @@ use tracing::error;
 use common::{ClientMessage, ServerMessage};
 
 use crate::db;
+use regex; // Add regex import
 
 // Peer and PeerMap types for session management
 pub struct Peer {
@@ -60,6 +61,68 @@ async fn push_notifications_if_online(peer_map: &PeerMap, user_id: Uuid) {
         if peer.user_id == Some(user_id) {
             if let Ok((notifications, history_complete)) = db::notifications::db_get_notifications(user_id, None).await {
                 let _ = peer.tx.send(ServerMessage::Notifications { notifications, history_complete });
+            }
+        }
+    }
+}
+
+// Helper: Broadcast a message to all users in a channel
+async fn broadcast_to_channel_users(
+    peer_map: &PeerMap,
+    channel_user_ids: &[Uuid],
+    msg: &ServerMessage,
+) {
+    let peers = peer_map.lock().await;
+    for peer in peers.values() {
+        if let Some(uid) = peer.user_id {
+            if channel_user_ids.contains(&uid) {
+                let _ = peer.tx.send(msg.clone());
+            }
+        }
+    }
+}
+
+// Helper: Handle mentions in a channel message (insert notification, send real-time event if online)
+async fn handle_channel_mentions(
+    peer_map: &PeerMap,
+    channel_userlist: &[common::User],
+    author_profile: &common::User,
+    msg_id: Uuid,
+    content: &str,
+) {
+    let mention_re = regex::Regex::new(r"@([a-zA-Z0-9_]+)").unwrap();
+    let mentioned: Vec<String> = mention_re
+        .captures_iter(content)
+        .filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string()))
+        .collect();
+    if !mentioned.is_empty() {
+        // First, insert notifications for mentioned users who are in the channel
+        for username in &mentioned {
+            if let Some(user) = channel_userlist.iter().find(|u| u.username == *username) {
+                let _ = db::notifications::db_insert_notification(
+                    user.id,
+                    "Mention",
+                    msg_id,
+                    Some(format!("From: {}", author_profile.username)),
+                ).await;
+            }
+        }
+        // Then, send real-time mention notifications to online users (like old_main.rs)
+        let peers = peer_map.lock().await;
+        for username in mentioned {
+            // Find the mentioned user among all online peers (like old_main.rs does)
+            for peer in peers.values() {
+                if let Some(uid) = peer.user_id {
+                    if let Ok(profile) = db::users::db_get_user_by_id(uid).await {
+                        if profile.username == username {
+                            let _ = peer.tx.send(ServerMessage::MentionNotification {
+                                from: author_profile.clone(),
+                                content: content.to_string(),
+                            });
+                            break; // Found the user, stop searching
+                        }
+                    }
+                }
             }
         }
     }
@@ -133,9 +196,8 @@ pub async fn handle_connection(
                                                 cover_banner: profile.cover_banner.clone(),
                                                 status: common::UserStatus::Connected,
                                             };
-                                            // Removed unused variable assignment
-                                            // Broadcast UserJoined to all users in same channels
-                                            // broadcast_to_user_channels(&peer_map_task, user.id, &ServerMessage::UserJoined(user.clone())).await;
+                                            // Update current_user to track login state like old_main.rs
+                                            current_user = Some(user.clone());
                                             ServerMessage::AuthSuccess(user)
                                         }
                                         Err(e) => ServerMessage::AuthFailure(e.clone()),
@@ -147,6 +209,7 @@ pub async fn handle_connection(
                                     if let Some(peer) = peers.get_mut(&peer_id) {
                                         peer.user_id = None;
                                     }
+                                    current_user = None;
                                 }
                                 ClientMessage::GetForums => {
                                     let forums = db::forums::db_get_forums().await.unwrap_or_default();
@@ -185,15 +248,6 @@ pub async fn handle_connection(
                                 ClientMessage::GetDMUserList => {
                                     if let Some(user_id) = peer_map_task.lock().await.get(&peer_id).and_then(|p| p.user_id) {
                                         let users = db::messages::db_get_dm_user_list(user_id).await.unwrap_or_default();
-                                        // // Update status for online users, set Offline otherwise
-                                        // let peers = peer_map_task.lock().await;
-                                        // for user in users.iter_mut() {
-                                        //     if peers.values().any(|p| p.user_id == Some(user.id)) {
-                                        //         user.status = common::UserStatus::Connected;
-                                        //     } else {
-                                        //         user.status = common::UserStatus::Offline;
-                                        //     }
-                                        // }
                                         let response = ServerMessage::DMUserList(users);
                                         let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                     }
@@ -206,32 +260,42 @@ pub async fn handle_connection(
                                     }
                                 }
                                 ClientMessage::SendDirectMessage { to, content } => {
-                                    if let Some(from) = peer_map_task.lock().await.get(&peer_id).and_then(|p| p.user_id) {
+                                    if let Some(user) = &current_user {
                                         let timestamp = chrono::Utc::now().timestamp();
-                                        if let Ok(dm_id) = db::messages::db_store_direct_message(from, to, &content, timestamp).await {
-                                            // Insert notification for recipient
-                                            let _ = db::notifications::db_insert_notification(to, "DM", dm_id, Some(format!("From: {}", from))).await;
-                                            // Push notification to recipient if online
-                                            push_notifications_if_online(&peer_map_task, to).await;
-                                            // Fetch author info for the message
-                                            if let Ok(author_profile) = db::users::db_get_user_by_id(from).await {
-                                                let dm = common::DirectMessage {
-                                                    id: dm_id,
-                                                    from,
-                                                    to,
-                                                    timestamp,
-                                                    content: content.clone(),
-                                                    author_username: author_profile.username,
-                                                    author_color: author_profile.color,
-                                                    author_profile_pic: author_profile.profile_pic,
-                                                };
-                                                // Send DM to recipient if online
-                                                let peers = peer_map_task.lock().await;
-                                                for peer in peers.values() {
-                                                    if let Some(uid) = peer.user_id {
-                                                        if uid == to || uid == from {
-                                                            let _ = peer.tx.send(ServerMessage::DirectMessage(dm.clone()));
-                                                        }
+                                        let dm_id = db::messages::db_store_direct_message(user.id, to, &content, timestamp).await;
+                                        let dm_id = match dm_id {
+                                            Ok(id) => id,
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to send DM: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                                continue;
+                                            }
+                                        };
+                                        // Fetch author info for the message
+                                        if let Ok(author_profile) = db::users::db_get_user_by_id(user.id).await {
+                                            let dm = common::DirectMessage {
+                                                id: dm_id,
+                                                from: user.id,
+                                                to,
+                                                timestamp,
+                                                content: content.clone(),
+                                                author_username: author_profile.username,
+                                                author_color: author_profile.color,
+                                                author_profile_pic: author_profile.profile_pic,
+                                            };
+                                            // Create notification for recipient, referencing the DM UUID (using from_user.username like old code)
+                                            let _ = db::notifications::db_insert_notification(
+                                                to,
+                                                "DM",
+                                                dm_id,
+                                                Some(format!("From: {}", user.username))
+                                            ).await;
+                                            // Send DM to recipient and sender if online
+                                            let peers = peer_map_task.lock().await;
+                                            for peer in peers.values() {
+                                                if let Some(uid) = peer.user_id {
+                                                    if uid == to || uid == user.id {
+                                                        let _ = peer.tx.send(ServerMessage::DirectMessage(dm.clone()));
                                                     }
                                                 }
                                             }
@@ -239,59 +303,34 @@ pub async fn handle_connection(
                                     }
                                 }
                                 ClientMessage::SendChannelMessage { channel_id, content } => {
-                                    if let Some(sent_by) = peer_map_task.lock().await.get(&peer_id).and_then(|p| p.user_id) {
+                                    if let Some(user) = &current_user {
                                         let timestamp = chrono::Utc::now().timestamp();
-                                        if let Ok(msg_id) = db::channels::db_create_channel_message(channel_id, sent_by, timestamp, &content).await {
-                                            if let Ok(author_profile) = db::users::db_get_user_by_id(sent_by).await {
-                                                let channel_msg = common::ChannelMessage {
-                                                    id: msg_id,
-                                                    channel_id,
-                                                    sent_by,
-                                                    timestamp,
-                                                    content: content.clone(),
-                                                    author_username: author_profile.username.clone(),
-                                                    author_color: author_profile.color,
-                                                    author_profile_pic: author_profile.profile_pic.clone(),
-                                                };
-                                                // Broadcast only to users in the channel
-                                                let peers = peer_map_task.lock().await;
-                                                // Fetch channel userlist from DB
-                                                let channel_userlist = db::channels::db_get_channel_user_list(channel_id).await.unwrap_or_default();
-                                                let channel_user_ids: Vec<Uuid> = channel_userlist.iter().map(|u| u.id).collect();
-                                                for peer in peers.values() {
-                                                    if let Some(uid) = peer.user_id {
-                                                        if channel_user_ids.contains(&uid) {
-                                                            let _ = peer.tx.send(ServerMessage::NewChannelMessage(channel_msg.clone()));
-                                                        }
-                                                    }
-                                                }
-                                                // --- Mention logic ---
-                                                let mention_re = regex::Regex::new(r"@([a-zA-Z0-9_]+)").unwrap();
-                                                let mentioned: Vec<String> = mention_re.captures_iter(&content).filter_map(|cap| cap.get(1).map(|m| m.as_str().to_string())).collect();
-                                                if !mentioned.is_empty() {
+                                        match db::channels::db_create_channel_message(channel_id, user.id, timestamp, &content).await {
+                                            Ok(msg_id) => {
+                                                // Fetch author info for the message
+                                                if let Ok(author_profile) = db::users::db_get_user_by_id(user.id).await {
+                                                    let channel_msg = common::ChannelMessage {
+                                                        id: msg_id,
+                                                        channel_id,
+                                                        sent_by: user.id,
+                                                        timestamp,
+                                                        content: content.clone(),
+                                                        author_username: author_profile.username.clone(),
+                                                        author_color: author_profile.color,
+                                                        author_profile_pic: author_profile.profile_pic.clone(),
+                                                    };
+                                                    // Fetch channel userlist from DB ONCE
                                                     let channel_userlist = db::channels::db_get_channel_user_list(channel_id).await.unwrap_or_default();
-                                                    for username in mentioned {
-                                                        if let Some(user) = channel_userlist.iter().find(|u| u.username == username) {
-                                                            let _ = db::notifications::db_insert_notification(user.id, "Mention", msg_id, Some(format!("From: {}", author_profile.username))).await;
-                                                            push_notifications_if_online(&peer_map_task, user.id).await;
-                                                            // If online, send mention notification
-                                                            if let Some(peer) = peers.values().find(|p| p.user_id == Some(user.id)) {
-                                                                let _ = peer.tx.send(ServerMessage::MentionNotification {
-                                                                    from: common::User {
-                                                                        id: author_profile.id,
-                                                                        username: author_profile.username.clone(),
-                                                                        color: author_profile.color,
-                                                                        role: author_profile.role.clone(),
-                                                                        profile_pic: author_profile.profile_pic.clone(),
-                                                                        cover_banner: author_profile.cover_banner.clone(),
-                                                                        status: common::UserStatus::Connected,
-                                                                    },
-                                                                    content: content.clone(),
-                                                                });
-                                                            }
-                                                        }
-                                                    }
+                                                    let channel_user_ids: Vec<Uuid> = channel_userlist.iter().map(|u| u.id).collect();
+                                                    // Broadcast to all users in the channel
+                                                    broadcast_to_channel_users(&peer_map_task, &channel_user_ids, &ServerMessage::NewChannelMessage(channel_msg.clone())).await;
+                                                    // Handle mentions (insert notification, send real-time event if online)
+                                                    handle_channel_mentions(&peer_map_task, &channel_userlist, user, msg_id, &content).await;
                                                 }
+                                            }
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to send channel message: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                             }
                                         }
                                     }
