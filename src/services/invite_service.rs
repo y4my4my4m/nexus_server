@@ -143,8 +143,8 @@ impl InviteService {
         }
 
         // Fetch the actual user data
-        let user = db_get_user_by_id(user_id).await?
-            .ok_or_else(|| ServerError::NotFound("User not found".to_string()))?;
+        let user = db_get_user_by_id(user_id).await
+            .map_err(|e| ServerError::Database(e))?;
 
         // Notify the original sender about the response
         let response_message = ServerMessage::ServerInviteResponse {
@@ -157,7 +157,7 @@ impl InviteService {
                 role: user.role,
                 profile_pic: user.profile_pic,
                 cover_banner: user.cover_banner,
-                status: user.status,
+                status: common::UserStatus::Connected, // Default status since UserProfile doesn't have status
             },
         };
         
