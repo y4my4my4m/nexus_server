@@ -180,7 +180,7 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::Login { username, password } => {
                                     let result = db::users::db_login_user(&username, &password).await;
-                                    let response = match &result {
+                                    match &result {
                                         Ok(profile) => {
                                             // Set user_id in peer map
                                             let mut peers = peer_map_task.lock().await;
@@ -196,20 +196,29 @@ pub async fn handle_connection(
                                                 cover_banner: profile.cover_banner.clone(),
                                                 status: common::UserStatus::Connected,
                                             };
-                                            // Update current_user to track login state like old_main.rs
                                             current_user = Some(user.clone());
-                                            ServerMessage::AuthSuccess(user)
+                                            let response = ServerMessage::AuthSuccess(user.clone());
+                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            drop(peers); // Drop lock before broadcast
+                                            broadcast_to_user_channels(&peer_map_task, user.id, &ServerMessage::UserJoined(user)).await;
                                         }
-                                        Err(e) => ServerMessage::AuthFailure(e.clone()),
-                                    };
-                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                        Err(e) => {
+                                            let response = ServerMessage::AuthFailure(e.clone());
+                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                        }
+                                    }
                                 }
                                 ClientMessage::Logout => {
                                     let mut peers = peer_map_task.lock().await;
                                     if let Some(peer) = peers.get_mut(&peer_id) {
                                         peer.user_id = None;
                                     }
+                                    let user_opt = current_user.clone();
                                     current_user = None;
+                                    drop(peers); // Drop lock before broadcast
+                                    if let Some(user) = user_opt {
+                                        broadcast_to_user_channels(&peer_map_task, user.id, &ServerMessage::UserLeft(user.id)).await;
+                                    }
                                 }
                                 ClientMessage::GetForums => {
                                     let forums = db::forums::db_get_forums().await.unwrap_or_default();
@@ -364,8 +373,13 @@ pub async fn handle_connection(
                                                 cover_banner: profile.cover_banner.clone(),
                                                 status: common::UserStatus::Connected,
                                             };
-                                            // Broadcast UserUpdated to all users in same channels
-                                            broadcast_to_user_channels(&peer_map_task, user.id, &ServerMessage::UserUpdated(user)).await;
+                                            broadcast_to_user_channels(&peer_map_task, user.id, &ServerMessage::UserUpdated(user.clone())).await;
+                                            // Also broadcast updated ChannelUserList for each channel the user is in
+                                            let channel_ids = get_user_channel_ids(user.id).await;
+                                            for channel_id in channel_ids {
+                                                let users = db::channels::db_get_channel_user_list(channel_id).await.unwrap_or_default();
+                                                broadcast_to_channel_users(&peer_map_task, &users.iter().map(|u| u.id).collect::<Vec<_>>(), &ServerMessage::ChannelUserList { channel_id, users }).await;
+                                            }
                                         }
                                     }
                                 }
@@ -376,6 +390,25 @@ pub async fn handle_connection(
                                             other => format!("{:?}", other),
                                         };
                                         let _ = db::users::db_update_user_color(user_id, &color_str).await;
+                                        // Fetch updated user
+                                        if let Ok(profile) = db::users::db_get_user_by_id(user_id).await {
+                                            let user = common::User {
+                                                id: profile.id,
+                                                username: profile.username,
+                                                color: profile.color,
+                                                role: profile.role,
+                                                profile_pic: profile.profile_pic.clone(),
+                                                cover_banner: profile.cover_banner.clone(),
+                                                status: common::UserStatus::Connected,
+                                            };
+                                            broadcast_to_user_channels(&peer_map_task, user.id, &ServerMessage::UserUpdated(user.clone())).await;
+                                            // Also broadcast updated ChannelUserList for each channel the user is in
+                                            let channel_ids = get_user_channel_ids(user.id).await;
+                                            for channel_id in channel_ids {
+                                                let users = db::channels::db_get_channel_user_list(channel_id).await.unwrap_or_default();
+                                                broadcast_to_channel_users(&peer_map_task, &users.iter().map(|u| u.id).collect::<Vec<_>>(), &ServerMessage::ChannelUserList { channel_id, users }).await;
+                                            }
+                                        }
                                     }
                                 }
                                 ClientMessage::CreatePost { thread_id, content } => {
@@ -428,10 +461,16 @@ pub async fn handle_connection(
         let mut peers = peer_map_task.lock().await;
         let user_id_opt = peers.get(&peer_id).and_then(|p| p.user_id);
         peers.remove(&peer_id);
-        drop(peers);
+        drop(peers); // Drop lock before broadcast
         if let Some(user_id) = user_id_opt {
             // Broadcast UserLeft to all users in same channels
             broadcast_to_user_channels(&peer_map_task, user_id, &ServerMessage::UserLeft(user_id)).await;
+            // Also broadcast updated ChannelUserList for each channel the user was in
+            let channel_ids = get_user_channel_ids(user_id).await;
+            for channel_id in channel_ids {
+                let users = db::channels::db_get_channel_user_list(channel_id).await.unwrap_or_default();
+                broadcast_to_channel_users(&peer_map_task, &users.iter().map(|u| u.id).collect::<Vec<_>>(), &ServerMessage::ChannelUserList { channel_id, users }).await;
+            }
         }
     });
 }
