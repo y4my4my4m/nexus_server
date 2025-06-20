@@ -196,6 +196,39 @@ pub async fn handle_connection(
                                         }
                                     }
                                 }
+                                ClientMessage::AcceptServerInviteFromUser { from_user_id } => {
+                                    if let Some(user) = &current_user {
+                                        match crate::services::InviteService::respond_to_invite_from_user(from_user_id, user.id, true, &peer_map_task).await {
+                                            Ok(_) => {
+                                                let response = ServerMessage::Notification("Server invite accepted successfully!".to_string(), false);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                                
+                                                // Refresh the user's server list
+                                                let servers = db::servers::db_get_user_servers(user.id).await.unwrap_or_default();
+                                                let response = ServerMessage::Servers(servers);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to accept invite: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                ClientMessage::DeclineServerInviteFromUser { from_user_id } => {
+                                    if let Some(user) = &current_user {
+                                        match crate::services::InviteService::respond_to_invite_from_user(from_user_id, user.id, false, &peer_map_task).await {
+                                            Ok(_) => {
+                                                let response = ServerMessage::Notification("Server invite declined.".to_string(), false);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to decline invite: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                        }
+                                    }
+                                }
                                 ClientMessage::GetChannelMessages { channel_id, before } => {
                                     match ChatService::get_channel_messages(channel_id, before, 50).await {
                                         Ok((messages, history_complete)) => {

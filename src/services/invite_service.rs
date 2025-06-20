@@ -1,9 +1,11 @@
 use crate::db::invites::*;
 use crate::db::servers::{add_user_to_server, db_is_user_in_server};
+use crate::db::users::db_get_user_by_id;
+use crate::db::messages;
 use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;
 use crate::api::connection::PeerMap;
-use common::{ServerInvite, ServerInviteStatus, ServerMessage, User};
+use common::{ServerInvite, ServerInviteStatus, ServerMessage, User, DirectMessage};
 use tracing::{error, info};
 use uuid::Uuid;
 use ratatui::style::Color;
@@ -38,15 +40,59 @@ impl InviteService {
         
         // Get the full invite details to send to the recipient
         if let Some(invite) = db_get_invite_by_id(invite_id).await? {
-            let message = ServerMessage::ServerInviteReceived(invite.clone());
-            
-            // Try to send directly to the user if they're online
-            if BroadcastService::send_to_user(peer_map, to_user_id, &message).await {
-                info!("Server invite sent to online user {}", to_user_id);
-            } else {
-                info!("Server invite created for offline user {}", to_user_id);
-                // The invite is already stored in the database, so when they come online 
-                // and request notifications/invites, they'll see it
+            // Get sender user info for the DM
+            match db_get_user_by_id(from_user_id).await {
+                Ok(from_user_profile) => {
+                    // Convert UserProfile to User
+                    let from_user = User {
+                        id: from_user_profile.id,
+                        username: from_user_profile.username.clone(),
+                        color: from_user_profile.color,
+                        role: from_user_profile.role,
+                        profile_pic: from_user_profile.profile_pic.clone(),
+                        cover_banner: from_user_profile.cover_banner.clone(),
+                        status: common::UserStatus::Connected,
+                    };
+                    
+                    let timestamp = chrono::Utc::now().timestamp();
+                    
+                    // Create special DM content for server invite
+                    let invite_content = format!("🎮 SERVER INVITE: {} invited you to join '{}'!\n\nType /accept to accept or /decline to decline this invitation.", 
+                        from_user.username, 
+                        invite.server.name
+                    );
+                    
+                    // Store the invite message as a DM in the database
+                    let dm_id = messages::db_store_direct_message(
+                        from_user_id, to_user_id, &invite_content, timestamp
+                    ).await.map_err(|e| ServerError::Database(e))?;
+
+                    // Create DM object
+                    let dm = DirectMessage {
+                        id: dm_id,
+                        from: from_user_id,
+                        to: to_user_id,
+                        timestamp,
+                        content: invite_content,
+                        author_username: from_user.username.clone(),
+                        author_color: from_user.color,
+                        author_profile_pic: from_user.profile_pic.clone(),
+                    };
+
+                    // Send the DM to both users
+                    let dm_message = ServerMessage::DirectMessage(dm);
+                    let user_ids = vec![from_user_id, to_user_id];
+                    BroadcastService::broadcast_to_users(peer_map, &user_ids, &dm_message).await;
+
+                    // Also send the raw invite data for the client to handle specially
+                    let invite_message = ServerMessage::ServerInviteReceived(invite.clone());
+                    BroadcastService::send_to_user(peer_map, to_user_id, &invite_message).await;
+                    
+                    info!("Server invite sent as DM to user {}", to_user_id);
+                }
+                Err(e) => {
+                    error!("Failed to get user profile for invite DM: {:?}", e);
+                }
             }
             
             // Also notify the sender about successful invite creation
@@ -120,6 +166,23 @@ impl InviteService {
         let mut updated_invite = invite;
         updated_invite.status = new_status;
         Ok(updated_invite)
+    }
+
+    /// Respond to a server invite from a specific user (for /accept and /decline commands in DM)
+    pub async fn respond_to_invite_from_user(
+        from_user_id: Uuid,
+        to_user_id: Uuid,
+        accept: bool,
+        peer_map: &PeerMap,
+    ) -> Result<()> {
+        // Find the pending invite from this user
+        let invite = db_get_pending_invite_from_user(from_user_id, to_user_id).await?
+            .ok_or_else(|| ServerError::NotFound("No pending invite from this user".to_string()))?;
+
+        // Use the existing respond_to_invite method
+        Self::respond_to_invite(invite.id, to_user_id, accept, peer_map).await?;
+        
+        Ok(())
     }
 
     /// Get pending invites for a user
