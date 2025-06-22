@@ -32,7 +32,7 @@ impl UserService {
         let user = User {
             id: profile.id,
             username: profile.username.clone(),
-            color: profile.color,
+            color: profile.color.into(),
             role: profile.role,
             profile_pic: profile.profile_pic,
             cover_banner: profile.cover_banner,
@@ -58,7 +58,7 @@ impl UserService {
         let user = User {
             id: profile.id,
             username: profile.username.clone(),
-            color: profile.color,
+            color: profile.color.into(),
             role: profile.role,
             profile_pic: profile.profile_pic,
             cover_banner: profile.cover_banner,
@@ -106,7 +106,7 @@ impl UserService {
             let updated_user = User {
                 id: full_user.id,
                 username: full_user.username,
-                color: full_user.color,
+                color: full_user.color.into(),
                 role: full_user.role,
                 profile_pic: full_user.profile_pic,
                 cover_banner: full_user.cover_banner,
@@ -137,7 +137,7 @@ impl UserService {
         let updated_user = User {
             id: profile.id,
             username: profile.username,
-            color: profile.color,
+            color: profile.color.into(),
             role: profile.role,
             profile_pic: profile.profile_pic,
             cover_banner: profile.cover_banner,
@@ -176,7 +176,7 @@ impl UserService {
                 users.push(User {
                     id: profile.id,
                     username: profile.username,
-                    color: profile.color,
+                    color: profile.color.into(),
                     role: profile.role,
                     profile_pic: profile.profile_pic,
                     cover_banner: profile.cover_banner,

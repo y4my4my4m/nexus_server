@@ -5,6 +5,60 @@ use crate::api::connection::PeerMap;
 use common::{ChannelMessage, DirectMessage, ServerMessage, User};
 use tracing::{error, info};
 use uuid::Uuid;
+use std::collections::HashMap;
+
+/// Configuration for pagination
+#[derive(Debug, Clone)]
+pub struct PaginationConfig {
+    pub default_page_size: usize,
+    pub max_page_size: usize,
+    pub prefetch_threshold: usize, // How many messages to prefetch
+}
+
+impl Default for PaginationConfig {
+    fn default() -> Self {
+        Self {
+            default_page_size: 50,
+            max_page_size: 100,
+            prefetch_threshold: 10,
+        }
+    }
+}
+
+/// Pagination cursor for efficient message fetching
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaginationCursor {
+    /// Timestamp-based cursor (more efficient for time-ordered data)
+    Timestamp(i64),
+    /// Offset-based cursor (fallback)
+    Offset(usize),
+    /// Start from beginning
+    Start,
+}
+
+/// Pagination request parameters
+#[derive(Debug, Clone)]
+pub struct PaginationRequest {
+    pub cursor: PaginationCursor,
+    pub limit: usize,
+    pub direction: PaginationDirection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PaginationDirection {
+    Forward,  // Newer messages
+    Backward, // Older messages
+}
+
+/// Pagination response with metadata
+#[derive(Debug, Clone)]
+pub struct PaginationResponse<T> {
+    pub items: Vec<T>,
+    pub has_more: bool,
+    pub next_cursor: Option<PaginationCursor>,
+    pub prev_cursor: Option<PaginationCursor>,
+    pub total_count: Option<usize>, // Optional for performance
+}
 
 pub struct ChatService;
 
@@ -31,7 +85,7 @@ impl ChatService {
             timestamp,
             content: content.to_string(),
             author_username: user.username.clone(),
-            author_color: user.color,
+            author_color: user.color.clone(),
             author_profile_pic: user.profile_pic.clone(),
         };
 
@@ -77,7 +131,7 @@ impl ChatService {
             timestamp,
             content: content.to_string(),
             author_username: from_user.username.clone(),
-            author_color: from_user.color,
+            author_color: from_user.color.clone(),
             author_profile_pic: from_user.profile_pic.clone(),
         };
 
@@ -91,6 +145,185 @@ impl ChatService {
 
         info!("Direct message sent from {} to {}", from_user.username, to_user_id);
         Ok(())
+    }
+
+    /// Get channel messages with enhanced pagination
+    pub async fn get_channel_messages_paginated(
+        channel_id: Uuid,
+        request: PaginationRequest,
+        config: Option<PaginationConfig>,
+    ) -> Result<PaginationResponse<ChannelMessage>> {
+        let config = config.unwrap_or_default();
+        let limit = request.limit.min(config.max_page_size).max(1);
+        
+        match request.cursor {
+            PaginationCursor::Timestamp(before_ts) => {
+                let (messages, has_more) = channels::db_get_channel_messages_by_timestamp(
+                    channel_id, 
+                    Some(before_ts), 
+                    limit,
+                    request.direction == PaginationDirection::Backward
+                ).await.map_err(|e| ServerError::Database(e))?;
+                
+                let next_cursor = if has_more && !messages.is_empty() {
+                    match request.direction {
+                        PaginationDirection::Backward => {
+                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
+                        }
+                        PaginationDirection::Forward => {
+                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
+                        }
+                    }
+                } else {
+                    None
+                };
+                
+                let prev_cursor = if !messages.is_empty() {
+                    match request.direction {
+                        PaginationDirection::Backward => {
+                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
+                        }
+                        PaginationDirection::Forward => {
+                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
+                        }
+                    }
+                } else {
+                    None
+                };
+                
+                Ok(PaginationResponse {
+                    items: messages,
+                    has_more,
+                    next_cursor,
+                    prev_cursor,
+                    total_count: None, // Could be expensive to calculate
+                })
+            }
+            PaginationCursor::Start => {
+                let (messages, has_more) = channels::db_get_channel_messages_by_timestamp(
+                    channel_id, 
+                    None, 
+                    limit,
+                    request.direction == PaginationDirection::Backward
+                ).await.map_err(|e| ServerError::Database(e))?;
+                
+                let next_cursor = if has_more && !messages.is_empty() {
+                    Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
+                } else {
+                    None
+                };
+                
+                Ok(PaginationResponse {
+                    items: messages,
+                    has_more,
+                    next_cursor,
+                    prev_cursor: None,
+                    total_count: None,
+                })
+            }
+            PaginationCursor::Offset(_) => {
+                // Fallback to existing implementation for compatibility
+                let (messages, has_more) = Self::get_channel_messages(channel_id, None, limit).await?;
+                Ok(PaginationResponse {
+                    items: messages,
+                    has_more,
+                    next_cursor: None,
+                    prev_cursor: None,
+                    total_count: None,
+                })
+            }
+        }
+    }
+
+    /// Get direct messages with enhanced pagination
+    pub async fn get_direct_messages_paginated(
+        user1_id: Uuid,
+        user2_id: Uuid,
+        request: PaginationRequest,
+        config: Option<PaginationConfig>,
+    ) -> Result<PaginationResponse<DirectMessage>> {
+        let config = config.unwrap_or_default();
+        let limit = request.limit.min(config.max_page_size).max(1);
+        
+        match request.cursor {
+            PaginationCursor::Timestamp(before_ts) => {
+                let (messages, has_more) = messages::db_get_direct_messages_by_timestamp(
+                    user1_id, 
+                    user2_id, 
+                    Some(before_ts), 
+                    limit,
+                    request.direction == PaginationDirection::Backward
+                ).await.map_err(|e| ServerError::Database(e))?;
+                
+                let next_cursor = if has_more && !messages.is_empty() {
+                    match request.direction {
+                        PaginationDirection::Backward => {
+                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
+                        }
+                        PaginationDirection::Forward => {
+                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
+                        }
+                    }
+                } else {
+                    None
+                };
+                
+                let prev_cursor = if !messages.is_empty() {
+                    match request.direction {
+                        PaginationDirection::Backward => {
+                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
+                        }
+                        PaginationDirection::Forward => {
+                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
+                        }
+                    }
+                } else {
+                    None
+                };
+                
+                Ok(PaginationResponse {
+                    items: messages,
+                    has_more,
+                    next_cursor,
+                    prev_cursor,
+                    total_count: None,
+                })
+            }
+            PaginationCursor::Start => {
+                let (messages, has_more) = messages::db_get_direct_messages_by_timestamp(
+                    user1_id, 
+                    user2_id, 
+                    None, 
+                    limit,
+                    request.direction == PaginationDirection::Backward
+                ).await.map_err(|e| ServerError::Database(e))?;
+                
+                let next_cursor = if has_more && !messages.is_empty() {
+                    Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
+                } else {
+                    None
+                };
+                
+                Ok(PaginationResponse {
+                    items: messages,
+                    has_more,
+                    next_cursor,
+                    prev_cursor: None,
+                    total_count: None,
+                })
+            }
+            PaginationCursor::Offset(_) => {
+                // Fallback to existing implementation
+                let (messages, has_more) = Self::get_direct_messages(user1_id, user2_id, None, limit).await?;
+                Ok(PaginationResponse {
+                    items: messages,
+                    has_more,
+                    next_cursor: None,
+                    prev_cursor: None,
+                    total_count: None,
+                })
+            }
+        }
     }
 
     /// Get channel messages with pagination

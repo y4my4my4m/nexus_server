@@ -1,4 +1,4 @@
-use crate::util::parse_color;
+use crate::util::{parse_color, parse_user_color};
 use common::{Forum, Thread, Post, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
@@ -63,7 +63,7 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 let author = User {
                     id: Uuid::parse_str(&user_id).unwrap(),
                     username,
-                    color: parse_color(&color),
+                    color: parse_user_color(&color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
@@ -111,7 +111,7 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
                     let post_author = User {
                         id: Uuid::parse_str(&puser_id).unwrap(),
                         username: pusername,
-                        color: parse_color(&pcolor),
+                        color: parse_user_color(&pcolor),
                         role: match prole.as_str() {
                             "Admin" => UserRole::Admin,
                             "Moderator" => UserRole::Moderator,

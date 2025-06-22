@@ -1,6 +1,6 @@
 // Channel DB functions
 
-use crate::util::parse_color;
+use crate::util::{parse_color, parse_user_color};
 use common::{ChannelMessage, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
@@ -78,7 +78,7 @@ pub async fn db_get_channel_messages(
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         
-        let mut messages = Vec::new();
+        let mut messages: Vec<ChannelMessage> = Vec::new();
         
         // Use separate if/else blocks to avoid type conflicts
         if let Some(before_ts) = before {
@@ -112,7 +112,7 @@ pub async fn db_get_channel_messages(
                     timestamp,
                     content,
                     author_username: username,
-                    author_color: parse_color(&color),
+                    author_color: parse_user_color(&color),
                     author_profile_pic: profile_pic,
                 });
             }
@@ -147,7 +147,7 @@ pub async fn db_get_channel_messages(
                     timestamp,
                     content,
                     author_username: username,
-                    author_color: parse_color(&color),
+                    author_color: parse_user_color(&color),
                     author_profile_pic: profile_pic,
                 });
             }
@@ -205,7 +205,7 @@ pub async fn db_get_channel_user_list(channel_id: Uuid) -> Result<Vec<User>, Str
             users.push(User {
                 id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
                 username,
-                color: parse_color(&color),
+                color: parse_user_color(&color),
                 role: match role.as_str() {
                     "Admin" => UserRole::Admin,
                     "Moderator" => UserRole::Moderator,
@@ -290,6 +290,141 @@ pub async fn add_user_to_channel(channel_id: Uuid, user_id: Uuid) -> Result<(), 
         ).map_err(|e| e.to_string())?;
 
         Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+/// Enhanced channel message retrieval with timestamp-based pagination
+pub async fn db_get_channel_messages_by_timestamp(
+    channel_id: Uuid,
+    before: Option<i64>,
+    limit: usize,
+    reverse_order: bool,
+) -> Result<(Vec<ChannelMessage>, bool), String> {
+    let channel_id_str = channel_id.to_string();
+    let limit = limit.min(200); // Safety limit
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        let mut messages: Vec<ChannelMessage> = Vec::new();
+        
+        if let Some(before_ts) = before {
+            let order = if reverse_order { "DESC" } else { "ASC" };
+            let comparison = if reverse_order { "<" } else { ">" };
+            
+            let query = format!(
+                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
+                 FROM channel_messages cm
+                 INNER JOIN users u ON cm.sent_by = u.id
+                 WHERE cm.channel_id = ? AND cm.timestamp {} ?
+                 ORDER BY cm.timestamp {} LIMIT ?",
+                comparison, order
+            );
+            
+            let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![channel_id_str, before_ts, limit + 1], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            }).map_err(|e| e.to_string())?;
+
+            for row in rows {
+                let (id, sent_by, timestamp, content, username, color, profile_pic) = 
+                    row.map_err(|e| e.to_string())?;
+                
+                messages.push(ChannelMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    channel_id,
+                    sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: username,
+                    author_color: crate::util::parse_user_color(&color),
+                    author_profile_pic: profile_pic,
+                });
+            }
+        } else {
+            let order = if reverse_order { "DESC" } else { "ASC" };
+            
+            let query = format!(
+                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
+                 FROM channel_messages cm
+                 INNER JOIN users u ON cm.sent_by = u.id
+                 WHERE cm.channel_id = ?
+                 ORDER BY cm.timestamp {} LIMIT ?",
+                order
+            );
+            
+            let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map(params![channel_id_str, limit + 1], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                ))
+            }).map_err(|e| e.to_string())?;
+
+            for row in rows {
+                let (id, sent_by, timestamp, content, username, color, profile_pic) = 
+                    row.map_err(|e| e.to_string())?;
+                
+                messages.push(ChannelMessage {
+                    id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
+                    channel_id,
+                    sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
+                    timestamp,
+                    content,
+                    author_username: username,
+                    author_color: crate::util::parse_user_color(&color),
+                    author_profile_pic: profile_pic,
+                });
+            }
+        }
+
+        // Check if there are more messages
+        let has_more = messages.len() > limit;
+        if has_more {
+            messages.pop(); // Remove the extra message
+        }
+
+        // If we fetched in reverse order, reverse again to get chronological order
+        if reverse_order {
+            messages.reverse();
+        }
+
+        Ok((messages, has_more))
+    })
+    .await
+    .unwrap()
+}
+
+/// Get total message count for a channel (for pagination metadata)
+pub async fn db_get_channel_message_count(channel_id: Uuid) -> Result<usize, String> {
+    let channel_id_str = channel_id.to_string();
+    
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        let mut stmt = conn.prepare(
+            "SELECT COUNT(*) FROM channel_messages WHERE channel_id = ?"
+        ).map_err(|e| e.to_string())?;
+        
+        let count: i64 = stmt.query_row(params![channel_id_str], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        
+        Ok(count as usize)
     })
     .await
     .unwrap()

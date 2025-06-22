@@ -110,10 +110,8 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::UpdateColor(color) => {
                                     if let Some(user) = &current_user {
-                                        let color_str = match color.0 {
-                                            ratatui::style::Color::Rgb(r, g, b) => format!("#{:02X}{:02X}{:02X}", r, g, b),
-                                            other => format!("{:?}", other),
-                                        };
+                                        // UserColor already contains a String, so we can use it directly
+                                        let color_str = color.0;
                                         if let Ok(updated_user) = UserService::update_color(user.id, &color_str, &peer_map_task).await {
                                             current_user = Some(updated_user);
                                         }
@@ -345,6 +343,151 @@ pub async fn handle_connection(
                                     let response = ServerMessage::Notification("Delete functionality not yet implemented".to_string(), true);
                                     let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
                                 }
+                                // --- ENHANCED PAGINATION HANDLERS ---
+                                ClientMessage::GetChannelMessagesPaginated { channel_id, cursor, limit, direction } => {
+                                    use crate::services::chat_service::{PaginationRequest, PaginationCursor as ServiceCursor, PaginationDirection as ServiceDirection};
+                                    
+                                    // Convert protocol types to service types
+                                    let service_cursor = match cursor {
+                                        common::PaginationCursor::Timestamp(ts) => ServiceCursor::Timestamp(ts),
+                                        common::PaginationCursor::Offset(offset) => ServiceCursor::Offset(offset),
+                                        common::PaginationCursor::Start => ServiceCursor::Start,
+                                    };
+                                    
+                                    let service_direction = match direction {
+                                        common::PaginationDirection::Forward => ServiceDirection::Forward,
+                                        common::PaginationDirection::Backward => ServiceDirection::Backward,
+                                    };
+                                    
+                                    let request = PaginationRequest {
+                                        cursor: service_cursor,
+                                        limit: limit.unwrap_or(50),
+                                        direction: service_direction,
+                                    };
+                                    
+                                    let start_time = std::time::Instant::now();
+                                    match ChatService::get_channel_messages_paginated(channel_id, request, None).await {
+                                        Ok(response) => {
+                                            let query_time = start_time.elapsed().as_millis() as u64;
+                                            let message_count = response.items.len();
+                                            
+                                            // Convert back to protocol types
+                                            let next_cursor = response.next_cursor.map(|c| match c {
+                                                ServiceCursor::Timestamp(ts) => common::PaginationCursor::Timestamp(ts),
+                                                ServiceCursor::Offset(offset) => common::PaginationCursor::Offset(offset),
+                                                ServiceCursor::Start => common::PaginationCursor::Start,
+                                            });
+                                            
+                                            let prev_cursor = response.prev_cursor.map(|c| match c {
+                                                ServiceCursor::Timestamp(ts) => common::PaginationCursor::Timestamp(ts),
+                                                ServiceCursor::Offset(offset) => common::PaginationCursor::Offset(offset),
+                                                ServiceCursor::Start => common::PaginationCursor::Start,
+                                            });
+                                            
+                                            let response_msg = ServerMessage::ChannelMessagesPaginated {
+                                                channel_id,
+                                                messages: response.items,
+                                                has_more: response.has_more,
+                                                next_cursor,
+                                                prev_cursor,
+                                                total_count: response.total_count,
+                                            };
+                                            let _ = sink.send(bincode::serialize(&response_msg).unwrap().into()).await;
+                                            
+                                            // Send performance metrics
+                                            let perf_msg = ServerMessage::PerformanceMetrics {
+                                                query_time_ms: query_time,
+                                                cache_hit_rate: 0.0, // Would need cache stats
+                                                message_count,
+                                            };
+                                            let _ = sink.send(bincode::serialize(&perf_msg).unwrap().into()).await;
+                                        }
+                                        Err(e) => {
+                                            let response = ServerMessage::Notification(format!("Failed to load messages: {}", e), true);
+                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                        }
+                                    }
+                                }
+                                ClientMessage::GetDirectMessagesPaginated { user_id, cursor, limit, direction } => {
+                                    if let Some(user) = &current_user {
+                                        use crate::services::chat_service::{PaginationRequest, PaginationCursor as ServiceCursor, PaginationDirection as ServiceDirection};
+                                        
+                                        let service_cursor = match cursor {
+                                            common::PaginationCursor::Timestamp(ts) => ServiceCursor::Timestamp(ts),
+                                            common::PaginationCursor::Offset(offset) => ServiceCursor::Offset(offset),
+                                            common::PaginationCursor::Start => ServiceCursor::Start,
+                                        };
+                                        
+                                        let service_direction = match direction {
+                                            common::PaginationDirection::Forward => ServiceDirection::Forward,
+                                            common::PaginationDirection::Backward => ServiceDirection::Backward,
+                                        };
+                                        
+                                        let request = PaginationRequest {
+                                            cursor: service_cursor,
+                                            limit: limit.unwrap_or(50),
+                                            direction: service_direction,
+                                        };
+                                        
+                                        let start_time = std::time::Instant::now();
+                                        match ChatService::get_direct_messages_paginated(user.id, user_id, request, None).await {
+                                            Ok(response) => {
+                                                let query_time = start_time.elapsed().as_millis() as u64;
+                                                let message_count = response.items.len();
+                                                
+                                                let next_cursor = response.next_cursor.map(|c| match c {
+                                                    ServiceCursor::Timestamp(ts) => common::PaginationCursor::Timestamp(ts),
+                                                    ServiceCursor::Offset(offset) => common::PaginationCursor::Offset(offset),
+                                                    ServiceCursor::Start => common::PaginationCursor::Start,
+                                                });
+                                                
+                                                let prev_cursor = response.prev_cursor.map(|c| match c {
+                                                    ServiceCursor::Timestamp(ts) => common::PaginationCursor::Timestamp(ts),
+                                                    ServiceCursor::Offset(offset) => common::PaginationCursor::Offset(offset),
+                                                    ServiceCursor::Start => common::PaginationCursor::Start,
+                                                });
+                                                
+                                                let response_msg = ServerMessage::DirectMessagesPaginated {
+                                                    user_id,
+                                                    messages: response.items,
+                                                    has_more: response.has_more,
+                                                    next_cursor,
+                                                    prev_cursor,
+                                                    total_count: response.total_count,
+                                                };
+                                                let _ = sink.send(bincode::serialize(&response_msg).unwrap().into()).await;
+                                                
+                                                let perf_msg = ServerMessage::PerformanceMetrics {
+                                                    query_time_ms: query_time,
+                                                    cache_hit_rate: 0.0,
+                                                    message_count,
+                                                };
+                                                let _ = sink.send(bincode::serialize(&perf_msg).unwrap().into()).await;
+                                            }
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to load DMs: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                ClientMessage::GetCacheStats => {
+                                    // This would typically be handled by a cache service
+                                    // For now, return mock data
+                                    let response = ServerMessage::CacheStats {
+                                        total_entries: 0,
+                                        total_size_mb: 0.0,
+                                        hit_ratio: 0.0,
+                                        expired_entries: 0,
+                                    };
+                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                }
+                                ClientMessage::InvalidateImageCache { keys } => {
+                                    // Broadcast cache invalidation to all connected clients
+                                    let response = ServerMessage::ImageCacheInvalidated { keys };
+                                    BroadcastService::broadcast_to_all(&peer_map_task, &response).await;
+                                }
+                                // ...existing handlers...
                             }
                         }
                         Err(e) => {
