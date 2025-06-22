@@ -5,7 +5,6 @@ use crate::api::connection::PeerMap;
 use common::{ChannelMessage, DirectMessage, ServerMessage, User};
 use tracing::{error, info};
 use uuid::Uuid;
-use std::collections::HashMap;
 
 /// Configuration for pagination
 #[derive(Debug, Clone)]
