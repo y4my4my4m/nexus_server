@@ -199,24 +199,23 @@ impl UserService {
 
     /// Add user to default server (for new registrations)
     async fn add_user_to_default_server(user_id: Uuid) -> Result<()> {
-        // Get default server ID
-        let default_server_id = crate::db::servers::get_default_server_id().await
-            .map_err(|e| ServerError::Database(e))?;
-
-        if let Some(server_id) = default_server_id {
-            // Add to server
-            crate::db::servers::add_user_to_server(server_id, user_id).await
-                .map_err(|e| ServerError::Database(e))?;
-
-            // Add to all channels in that server
-            let channel_ids = crate::db::channels::get_server_channels(server_id).await
-                .map_err(|e| ServerError::Database(e))?;
-
-            for channel_id in channel_ids {
-                let _ = crate::db::channels::add_user_to_channel(channel_id, user_id).await;
+        // Get the default server (first server in the system)
+        if let Ok(servers) = crate::db::servers::db_get_servers().await {
+            if let Some(server) = servers.first() {
+                // Add user to server
+                crate::db::servers::db_add_user_to_server(server.id, user_id).await
+                    .map_err(|e| ServerError::Database(e))?;
+                
+                // Get server channels and add user to them
+                let channel_ids = crate::db::channels::db_get_server_channels(server.id).await
+                    .map_err(|e| ServerError::Database(e))?;
+                
+                for channel_id in channel_ids {
+                    crate::db::channels::db_add_user_to_channel(channel_id, user_id).await
+                        .map_err(|e| ServerError::Database(e))?;
+                }
             }
         }
-
         Ok(())
     }
 }

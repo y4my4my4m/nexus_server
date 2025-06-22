@@ -1,6 +1,6 @@
 use crate::auth::{hash_password, verify_password};
 use crate::util::parse_user_color;
-use common::{UserProfile, UserRole};
+use common::{UserProfile, UserRole, User, UserInfo, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
 use tracing::info;
@@ -18,6 +18,84 @@ pub async fn db_count_users() -> Result<i64, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Get lightweight user info without profile images - for channel lists, etc.
+pub async fn db_get_user_info_by_id(user_id: Uuid) -> Result<UserInfo, String> {
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, username, color, role FROM users WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+
+        let user_info = stmt.query_row(params![user_id_str], |row| {
+            let role_str: String = row.get(3)?;
+            Ok(UserInfo {
+                id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                username: row.get(1)?,
+                color: parse_user_color(&row.get::<_, String>(2)?),
+                role: match role_str.as_str() {
+                    "Admin" => UserRole::Admin,
+                    "Moderator" => UserRole::Moderator,
+                    _ => UserRole::User,
+                },
+                status: UserStatus::Connected,
+            })
+        }).map_err(|_| "User not found".to_string())?;
+
+        Ok(user_info)
+    })
+    .await
+    .unwrap()
+}
+
+/// Get multiple users' lightweight info efficiently
+pub async fn db_get_users_info_by_ids(user_ids: &[Uuid]) -> Result<Vec<UserInfo>, String> {
+    if user_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let user_ids_str: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    let placeholders = user_ids_str.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+
+        let query = format!(
+            "SELECT id, username, color, role FROM users WHERE id IN ({})", 
+            placeholders
+        );
+        
+        let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+        let params: Vec<&dyn rusqlite::ToSql> = user_ids_str.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        
+        let rows = stmt.query_map(&params[..], |row| {
+            let role_str: String = row.get(3)?;
+            Ok(UserInfo {
+                id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                username: row.get(1)?,
+                color: parse_user_color(&row.get::<_, String>(2)?),
+                role: match role_str.as_str() {
+                    "Admin" => UserRole::Admin,
+                    "Moderator" => UserRole::Moderator,
+                    _ => UserRole::User,
+                },
+                status: UserStatus::Connected,
+            })
+        }).map_err(|e| e.to_string())?;
+
+        let mut users = Vec::new();
+        for row in rows {
+            users.push(row.map_err(|e| e.to_string())?);
+        }
+        
+        Ok(users)
+    })
+    .await
+    .unwrap()
 }
 
 pub async fn db_register_user(
@@ -357,6 +435,27 @@ pub async fn db_get_user_profile(user_id: Uuid) -> Result<UserProfile, String> {
             profile_pic: user.7,
             cover_banner: user.8,
         })
+    })
+    .await
+    .unwrap()
+}
+
+/// Get just a user's profile picture (for efficient avatar loading)
+pub async fn db_get_user_avatar(user_id: Uuid) -> Result<Option<String>, String> {
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+
+        let mut stmt = conn.prepare(
+            "SELECT profile_pic FROM users WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+
+        let profile_pic = stmt.query_row(params![user_id_str], |row| {
+            Ok(row.get::<_, Option<String>>(0)?)
+        }).map_err(|_| "User not found".to_string())?;
+
+        Ok(profile_pic)
     })
     .await
     .unwrap()

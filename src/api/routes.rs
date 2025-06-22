@@ -69,7 +69,12 @@ impl MessageRouter {
                 self.handle_get_channel_user_list(channel_id, response_sender).await
             }
             ClientMessage::GetDMUserList => {
-                self.handle_get_dm_user_list(current_user, response_sender).await
+                if let Some(user) = current_user {
+                    self.handle_get_dm_user_list(user.id, response_sender).await
+                } else {
+                    self.send_error(response_sender, "Must be logged in to get DM user list");
+                    Ok(())
+                }
             }
 
             // Enhanced pagination messages
@@ -77,7 +82,12 @@ impl MessageRouter {
                 self.handle_get_channel_messages_paginated(channel_id, cursor, limit, direction, response_sender).await
             }
             ClientMessage::GetDirectMessagesPaginated { user_id, cursor, limit, direction } => {
-                self.handle_get_direct_messages_paginated(current_user, user_id, cursor, limit, direction, response_sender).await
+                if let Some(user) = current_user {
+                    self.handle_get_direct_messages_paginated(user.id, user_id, cursor, limit, direction, response_sender).await
+                } else {
+                    self.send_error(response_sender, "Must be logged in to get direct messages");
+                    Ok(())
+                }
             }
 
             // Server and forum messages
@@ -134,6 +144,9 @@ impl MessageRouter {
             }
             ClientMessage::InvalidateImageCache { keys } => {
                 self.handle_invalidate_image_cache(keys, response_sender).await
+            }
+            ClientMessage::GetUserAvatars { user_ids } => {
+                self.handle_get_user_avatars(user_ids, response_sender).await
             }
         }
     }

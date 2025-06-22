@@ -181,4 +181,24 @@ impl MessageRouter {
         }
         Ok(())
     }
+
+    /// Handle get servers request
+    pub async fn handle_get_servers(
+        &self,
+        current_user: &Option<User>,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
+    ) -> crate::errors::Result<()> {
+        if let Some(user) = current_user {
+            match crate::db::servers::db_get_user_servers(user.id).await {
+                Ok(servers) => {
+                    let _ = response_sender.send(ServerMessage::Servers(servers));
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to get servers: {}", e);
+                    let _ = response_sender.send(ServerMessage::Notification(error_msg, true));
+                }
+            }
+        }
+        Ok(())
+    }
 }
