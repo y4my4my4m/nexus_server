@@ -338,10 +338,49 @@ pub async fn handle_connection(
                                         }
                                     }
                                 }
-                                ClientMessage::DeletePost(_) | ClientMessage::DeleteThread(_) => {
-                                    // TODO: Implement delete functionality
-                                    let response = ServerMessage::Notification("Delete functionality not yet implemented".to_string(), true);
-                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                ClientMessage::DeletePost(post_id) => {
+                                    if let Some(user) = &current_user {
+                                        match db::forums::db_delete_post(post_id, user.id).await {
+                                            Ok(_) => {
+                                                let response = ServerMessage::Notification("Post deleted successfully".to_string(), false);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                                
+                                                // Refresh forums to show updated state
+                                                let forums = db::forums::db_get_forums().await.unwrap_or_default();
+                                                let response = ServerMessage::Forums(forums);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to delete post: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                        }
+                                    } else {
+                                        let response = ServerMessage::Notification("Must be logged in to delete posts".to_string(), true);
+                                        let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                    }
+                                }
+                                ClientMessage::DeleteThread(thread_id) => {
+                                    if let Some(user) = &current_user {
+                                        match db::forums::db_delete_thread(thread_id, user.id).await {
+                                            Ok(_) => {
+                                                let response = ServerMessage::Notification("Thread deleted successfully".to_string(), false);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                                
+                                                // Refresh forums to show updated state
+                                                let forums = db::forums::db_get_forums().await.unwrap_or_default();
+                                                let response = ServerMessage::Forums(forums);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                            Err(e) => {
+                                                let response = ServerMessage::Notification(format!("Failed to delete thread: {}", e), true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                        }
+                                    } else {
+                                        let response = ServerMessage::Notification("Must be logged in to delete threads".to_string(), true);
+                                        let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                    }
                                 }
                                 // --- ENHANCED PAGINATION HANDLERS ---
                                 ClientMessage::GetChannelMessagesPaginated { channel_id, cursor, limit, direction } => {
@@ -487,7 +526,6 @@ pub async fn handle_connection(
                                     let response = ServerMessage::ImageCacheInvalidated { keys };
                                     BroadcastService::broadcast_to_all(&peer_map_task, &response).await;
                                 }
-                                // ...existing handlers...
                             }
                         }
                         Err(e) => {

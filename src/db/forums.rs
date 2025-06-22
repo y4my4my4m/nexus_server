@@ -208,3 +208,93 @@ pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> 
     .await
     .unwrap()
 }
+
+pub async fn db_delete_post(post_id: Uuid, user_id: Uuid) -> Result<(), String> {
+    let post_id_str = post_id.to_string();
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        // Check if the user owns the post or is an admin/moderator
+        let mut stmt = conn.prepare(
+            "SELECT author_id FROM posts WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let post_author_id: String = stmt.query_row(params![post_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "Post not found".to_string())?;
+        
+        // Check user role
+        let mut user_stmt = conn.prepare(
+            "SELECT role FROM users WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let user_role: String = user_stmt.query_row(params![user_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "User not found".to_string())?;
+        
+        // Allow deletion if user owns the post or is admin/moderator
+        if post_author_id != user_id_str && user_role != "Admin" && user_role != "Moderator" {
+            return Err("Permission denied: You can only delete your own posts".to_string());
+        }
+        
+        // Delete the post
+        conn.execute(
+            "DELETE FROM posts WHERE id = ?1",
+            params![post_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn db_delete_thread(thread_id: Uuid, user_id: Uuid) -> Result<(), String> {
+    let thread_id_str = thread_id.to_string();
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        // Check if the user owns the thread or is an admin/moderator
+        let mut stmt = conn.prepare(
+            "SELECT author_id FROM threads WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let thread_author_id: String = stmt.query_row(params![thread_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "Thread not found".to_string())?;
+        
+        // Check user role
+        let mut user_stmt = conn.prepare(
+            "SELECT role FROM users WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let user_role: String = user_stmt.query_row(params![user_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "User not found".to_string())?;
+        
+        // Allow deletion if user owns the thread or is admin/moderator
+        if thread_author_id != user_id_str && user_role != "Admin" && user_role != "Moderator" {
+            return Err("Permission denied: You can only delete your own threads".to_string());
+        }
+        
+        // Delete all posts in the thread first (foreign key constraint)
+        conn.execute(
+            "DELETE FROM posts WHERE thread_id = ?1",
+            params![thread_id_str],
+        ).map_err(|e| e.to_string())?;
+        
+        // Delete the thread
+        conn.execute(
+            "DELETE FROM threads WHERE id = ?1",
+            params![thread_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
