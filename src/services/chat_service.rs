@@ -31,7 +31,7 @@ impl ChatService {
             timestamp,
             content: content.to_string(),
             author_username: user.username.clone(),
-            author_color: user.color,
+            author_color: user.color.clone(),
             author_profile_pic: user.profile_pic.clone(),
         };
 
@@ -77,7 +77,7 @@ impl ChatService {
             timestamp,
             content: content.to_string(),
             author_username: from_user.username.clone(),
-            author_color: from_user.color,
+            author_color: from_user.color.clone(),
             author_profile_pic: from_user.profile_pic.clone(),
         };
 

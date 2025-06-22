@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use crate::errors::Result;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use uuid::Uuid;
 use futures::{SinkExt, StreamExt};
 use tracing::error;
-use common::{ClientMessage, ServerMessage};
+use common::{ClientMessage, ServerMessage, config::ServerConfig};
 
 use crate::db;
-use crate::services::{UserService, ChatService, NotificationService, BroadcastService};
+use crate::services::{UserService, ChatService, NotificationService, BroadcastService, RateLimitService, ContentFilterService};
 use regex;
 
 /// Represents a connected peer/client
@@ -25,8 +25,15 @@ pub type PeerMap = Arc<Mutex<HashMap<Uuid, Peer>>>;
 /// Main connection handler - processes client connections and messages
 pub async fn handle_connection(
     stream: TcpStream,
+    addr: std::net::SocketAddr,
     peer_map: PeerMap,
+    rate_limit_service: Arc<RateLimitService>,
+    content_filter_service: Arc<RwLock<ContentFilterService>>,
+    server_config: ServerConfig,
 ) -> Result<()> {
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    
     let peer_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel();
 
@@ -51,6 +58,13 @@ pub async fn handle_connection(
         loop {
             tokio::select! {
                 Some(Ok(msg)) = stream.next() => {
+                    // Apply rate limiting
+                    if let Err(e) = rate_limit_service.check_request_rate_limit(addr.ip()).await {
+                        let response = ServerMessage::Notification(e, true);
+                        let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                        continue;
+                    }
+                    
                     match bincode::deserialize::<ClientMessage>(&msg) {
                         Ok(message) => {
                             tracing::info!("Parsed ClientMessage: {:?}", message);
@@ -110,11 +124,9 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::UpdateColor(color) => {
                                     if let Some(user) = &current_user {
-                                        let color_str = match color.0 {
-                                            ratatui::style::Color::Rgb(r, g, b) => format!("#{:02X}{:02X}{:02X}", r, g, b),
-                                            other => format!("{:?}", other),
-                                        };
-                                        if let Ok(updated_user) = UserService::update_color(user.id, &color_str, &peer_map_task).await {
+                                        // The color is now a UserColor, extract the string
+                                        let color_str = color.as_str();
+                                        if let Ok(updated_user) = UserService::update_color(user.id, color_str, &peer_map_task).await {
                                             current_user = Some(updated_user);
                                         }
                                     }
@@ -152,7 +164,31 @@ pub async fn handle_connection(
                                 }
                                 ClientMessage::SendChannelMessage { channel_id, content } => {
                                     if let Some(user) = &current_user {
-                                        let _ = ChatService::send_channel_message(channel_id, user, &content, &peer_map_task).await;
+                                        // Apply rate limiting for messages
+                                        if let Err(e) = rate_limit_service.check_message_rate_limit(user.id).await {
+                                            let response = ServerMessage::Notification(e, true);
+                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            continue;
+                                        }
+                                        
+                                        // Apply content filtering
+                                        let filter_service = content_filter_service.read().await;
+                                        match filter_service.filter_message(&content, user.id) {
+                                            crate::services::FilterResult::Allowed => {
+                                                drop(filter_service);
+                                                let _ = ChatService::send_channel_message(channel_id, user, &content, &peer_map_task).await;
+                                            }
+                                            crate::services::FilterResult::Blocked { reason } => {
+                                                let response = ServerMessage::Notification(reason, true);
+                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                            }
+                                            crate::services::FilterResult::Flagged { reason } => {
+                                                // Log for manual review but allow the message
+                                                tracing::warn!("Message flagged for review from user {}: {}", user.id, reason);
+                                                drop(filter_service);
+                                                let _ = ChatService::send_channel_message(channel_id, user, &content, &peer_map_task).await;
+                                            }
+                                        }
                                     }
                                 }
                                 ClientMessage::SendDirectMessage { to, content } => {
