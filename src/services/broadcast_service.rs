@@ -38,11 +38,12 @@ impl BroadcastService {
         message: &ServerMessage,
     ) {
         let peers = peer_map.lock().await;
+        let user_ids_set: HashSet<Uuid> = user_ids.iter().copied().collect();
         let mut success_count = 0;
 
         for peer in peers.values() {
             if let Some(uid) = peer.user_id {
-                if user_ids.contains(&uid) {
+                if user_ids_set.contains(&uid) {
                     match peer.tx.send(message.clone()) {
                         Ok(_) => success_count += 1,
                         Err(e) => error!("Failed to send message to user {}: {}", uid, e),
@@ -57,11 +58,12 @@ impl BroadcastService {
     /// Send a message to multiple users
     async fn send_to_users(peer_map: &PeerMap, user_ids: &[Uuid], message: ServerMessage) {
         let peers = peer_map.lock().await;
+        let user_ids_set: HashSet<Uuid> = user_ids.iter().copied().collect();
         let mut success_count = 0;
 
         for peer in peers.values() {
             if let Some(uid) = peer.user_id {
-                if user_ids.contains(&uid) {
+                if user_ids_set.contains(&uid) {
                     match peer.tx.send(message.clone()) {
                         Ok(_) => success_count += 1,
                         Err(e) => error!("Failed to send message to user {}: {}", uid, e),

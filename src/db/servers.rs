@@ -190,19 +190,22 @@ pub async fn db_get_servers() -> Result<Vec<common::Server>, String> {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
-            "SELECT id, name, description FROM servers ORDER BY id LIMIT 1"
+            "SELECT id, name, description, owner FROM servers ORDER BY id LIMIT 1"
         ).map_err(|e| e.to_string())?;
         
         let rows = stmt.query_map([], |row| {
+            let owner_str: String = row.get(3)?;
+            let owner_uuid = Uuid::parse_str(&owner_str).map_err(|_| rusqlite::Error::InvalidColumnType(3, "owner".to_string(), rusqlite::types::Type::Text))?;
+            
             Ok(common::Server {
-                id: Uuid::parse_str(&row.get::<_, String>(0)?).unwrap(),
+                id: Uuid::parse_str(&row.get::<_, String>(0)?).map_err(|_| rusqlite::Error::InvalidColumnType(0, "id".to_string(), rusqlite::types::Type::Text))?,
                 name: row.get(1)?,
                 description: row.get(2)?,
                 public: true,
                 invite_code: None,
                 icon: None,
                 banner: None,
-                owner: Uuid::parse_str(&row.get::<_, String>(3)?).map_err(|e| e.to_string())?, // Actual owner
+                owner: owner_uuid,
                 mods: Vec::new(),
                 userlist: Vec::new(),
                 channels: Vec::new(),

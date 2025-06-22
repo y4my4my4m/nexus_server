@@ -1,6 +1,6 @@
 use crate::auth::{hash_password, verify_password};
 use crate::util::parse_user_color;
-use common::{UserProfile, UserRole, User, UserInfo, UserStatus};
+use common::{UserProfile, UserRole, UserInfo, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
 use tracing::info;
