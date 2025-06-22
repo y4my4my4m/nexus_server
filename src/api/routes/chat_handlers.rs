@@ -1,10 +1,8 @@
 use super::MessageRouter;
-use crate::services::ChatService;
-use crate::services::chat_service::{PaginationRequest, PaginationCursor, PaginationDirection};
-use common::{ServerMessage, User, PaginationCursor as CommonCursor, PaginationDirection as CommonDirection};
+use crate::db::{channels, messages};
+use common::{ServerMessage, User, PaginationCursor, PaginationDirection};
 use tokio::sync::mpsc;
 use uuid::Uuid;
-use std::time::Instant;
 
 impl MessageRouter {
     /// Handle sending channel message
@@ -16,7 +14,7 @@ impl MessageRouter {
         _response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            let _ = ChatService::send_channel_message(channel_id, user, &content, &self.peer_map).await;
+            let _ = crate::services::ChatService::send_channel_message(channel_id, user, &content, &self.peer_map).await;
         }
         Ok(())
     }
@@ -30,7 +28,7 @@ impl MessageRouter {
         _response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            let _ = ChatService::send_direct_message(user, to, &content, &self.peer_map).await;
+            let _ = crate::services::ChatService::send_direct_message(user, to, &content, &self.peer_map).await;
         }
         Ok(())
     }
@@ -42,16 +40,19 @@ impl MessageRouter {
         before: Option<i64>,
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
-        match ChatService::get_channel_messages(channel_id, before, 50).await {
+        match crate::services::ChatService::get_channel_messages(channel_id, before, 50).await {
             Ok((messages, history_complete)) => {
-                self.send_response(response_sender, ServerMessage::ChannelMessages { 
+                let _ = response_sender.send(ServerMessage::ChannelMessages { 
                     channel_id, 
                     messages, 
                     history_complete 
                 });
             }
             Err(_) => {
-                self.send_error(response_sender, "Failed to load messages");
+                let _ = response_sender.send(ServerMessage::Notification(
+                    "Failed to load messages".to_string(), 
+                    true
+                ));
             }
         }
         Ok(())
@@ -66,212 +67,236 @@ impl MessageRouter {
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            match ChatService::get_direct_messages(user.id, user_id, before, 50).await {
+            match crate::services::ChatService::get_direct_messages(user.id, user_id, before, 50).await {
                 Ok((messages, history_complete)) => {
-                    self.send_response(response_sender, ServerMessage::DirectMessages { 
+                    let _ = response_sender.send(ServerMessage::DirectMessages { 
                         user_id, 
                         messages, 
                         history_complete 
                     });
                 }
                 Err(_) => {
-                    self.send_error(response_sender, "Failed to load DMs");
+                    let _ = response_sender.send(ServerMessage::Notification(
+                        "Failed to load DMs".to_string(), 
+                        true
+                    ));
                 }
             }
         }
         Ok(())
     }
 
-    /// Handle get channel messages with pagination
-    pub async fn handle_get_channel_messages_paginated(
-        &self,
-        channel_id: Uuid,
-        cursor: CommonCursor,
-        limit: Option<usize>,
-        direction: CommonDirection,
-        response_sender: &mpsc::UnboundedSender<ServerMessage>,
-    ) -> crate::errors::Result<()> {
-        let start_time = Instant::now();
-        
-        // Convert protocol types to service types
-        let service_cursor = match cursor {
-            CommonCursor::Timestamp(ts) => PaginationCursor::Timestamp(ts),
-            CommonCursor::Offset(offset) => PaginationCursor::Offset(offset),
-            CommonCursor::Start => PaginationCursor::Start,
-        };
-        
-        let service_direction = match direction {
-            CommonDirection::Forward => PaginationDirection::Forward,
-            CommonDirection::Backward => PaginationDirection::Backward,
-        };
-        
-        let request = PaginationRequest {
-            cursor: service_cursor,
-            limit: limit.unwrap_or(50),
-            direction: service_direction,
-        };
-        
-        match ChatService::get_channel_messages_paginated(channel_id, request, None).await {
-            Ok(response) => {
-                let query_time = start_time.elapsed().as_millis() as f64;
-                let message_count = response.items.len();
-                
-                // Convert back to protocol types
-                let next_cursor = response.next_cursor.map(|c| match c {
-                    PaginationCursor::Timestamp(ts) => CommonCursor::Timestamp(ts),
-                    PaginationCursor::Offset(offset) => CommonCursor::Offset(offset),
-                    PaginationCursor::Start => CommonCursor::Start,
-                });
-                
-                let prev_cursor = response.prev_cursor.map(|c| match c {
-                    PaginationCursor::Timestamp(ts) => CommonCursor::Timestamp(ts),
-                    PaginationCursor::Offset(offset) => CommonCursor::Offset(offset),
-                    PaginationCursor::Start => CommonCursor::Start,
-                });
-                
-                self.send_response(response_sender, ServerMessage::ChannelMessagesPaginated {
-                    channel_id,
-                    messages: response.items,
-                    has_more: response.has_more,
-                    next_cursor,
-                    prev_cursor,
-                    total_count: response.total_count,
-                });
-                
-                // Send performance metrics
-                self.send_response(response_sender, ServerMessage::PerformanceMetrics {
-                    query_time_ms: query_time as u64,
-                    cache_hit_rate: 0.0,
-                    message_count,
-                });
-            }
-            Err(e) => {
-                self.send_error(response_sender, &format!("Failed to load messages: {}", e));
-            }
-        }
-        Ok(())
-    }
-
-    /// Handle get direct messages with pagination
-    pub async fn handle_get_direct_messages_paginated(
-        &self,
-        current_user: &Option<User>,
-        user_id: Uuid,
-        cursor: CommonCursor,
-        limit: Option<usize>,
-        direction: CommonDirection,
-        response_sender: &mpsc::UnboundedSender<ServerMessage>,
-    ) -> crate::errors::Result<()> {
-        if let Some(user) = current_user {
-            let start_time = Instant::now();
-            
-            // Convert protocol types to service types
-            let service_cursor = match cursor {
-                CommonCursor::Timestamp(ts) => PaginationCursor::Timestamp(ts),
-                CommonCursor::Offset(offset) => PaginationCursor::Offset(offset),
-                CommonCursor::Start => PaginationCursor::Start,
-            };
-            
-            let service_direction = match direction {
-                CommonDirection::Forward => PaginationDirection::Forward,
-                CommonDirection::Backward => PaginationDirection::Backward,
-            };
-            
-            let request = PaginationRequest {
-                cursor: service_cursor,
-                limit: limit.unwrap_or(50),
-                direction: service_direction,
-            };
-            
-            match ChatService::get_direct_messages_paginated(user.id, user_id, request, None).await {
-                Ok(response) => {
-                    let query_time = start_time.elapsed().as_millis() as f64;
-                    let message_count = response.items.len();
-                    
-                    // Convert back to protocol types
-                    let next_cursor = response.next_cursor.map(|c| match c {
-                        PaginationCursor::Timestamp(ts) => CommonCursor::Timestamp(ts),
-                        PaginationCursor::Offset(offset) => CommonCursor::Offset(offset),
-                        PaginationCursor::Start => CommonCursor::Start,
-                    });
-                    
-                    let prev_cursor = response.prev_cursor.map(|c| match c {
-                        PaginationCursor::Timestamp(ts) => CommonCursor::Timestamp(ts),
-                        PaginationCursor::Offset(offset) => CommonCursor::Offset(offset),
-                        PaginationCursor::Start => CommonCursor::Start,
-                    });
-                    
-                    self.send_response(response_sender, ServerMessage::DirectMessagesPaginated {
-                        user_id,
-                        messages: response.items,
-                        has_more: response.has_more,
-                        next_cursor,
-                        prev_cursor,
-                        total_count: response.total_count,
-                    });
-                    
-                    self.send_response(response_sender, ServerMessage::PerformanceMetrics {
-                        query_time_ms: query_time as u64,
-                        cache_hit_rate: 0.0,
-                        message_count,
-                    });
-                }
-                Err(e) => {
-                    self.send_error(response_sender, &format!("Failed to load DMs: {}", e));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Handle get channel user list
+    /// Handle get channel user list - optimized version
     pub async fn handle_get_channel_user_list(
         &self,
         channel_id: Uuid,
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
-        match ChatService::get_channel_users(channel_id, &self.peer_map).await {
-            Ok(users) => {
-                self.send_response(response_sender, ServerMessage::ChannelUserList { 
-                    channel_id, 
-                    users 
-                });
+        // Always use lightweight version for better performance
+        match channels::db_get_channel_user_list_lightweight(channel_id).await {
+            Ok(mut user_infos) => {
+                // Update online status based on who's actually connected
+                for user_info in &mut user_infos {
+                    user_info.status = if crate::services::BroadcastService::is_user_online(&self.peer_map, user_info.id).await {
+                        common::UserStatus::Connected
+                    } else {
+                        common::UserStatus::Offline
+                    };
+                }
+
+                // Convert UserInfo to User without profile images for better performance
+                let users = user_infos.into_iter().map(|info| User {
+                    id: info.id,
+                    username: info.username,
+                    color: info.color,
+                    role: info.role,
+                    profile_pic: None, // Exclude for performance
+                    cover_banner: None, // Exclude for performance
+                    status: info.status,
+                }).collect();
+                
+                let _ = response_sender.send(ServerMessage::ChannelUserList { channel_id, users });
             }
-            Err(_) => {
-                self.send_error(response_sender, "Failed to get channel users");
+            Err(e) => {
+                let error_msg = format!("Failed to get channel users: {}", e);
+                let _ = response_sender.send(ServerMessage::Notification(error_msg, true));
             }
         }
         Ok(())
     }
 
-    /// Handle get DM user list
+    /// Handle DM user list request - optimized version
     pub async fn handle_get_dm_user_list(
         &self,
-        current_user: &Option<User>,
+        user_id: Uuid,
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
-        if let Some(user) = current_user {
-            match ChatService::get_dm_user_list(user.id, &self.peer_map).await {
-                Ok(users) => {
-                    self.send_response(response_sender, ServerMessage::DMUserList(users));
+        // Always use lightweight version for better performance
+        match messages::db_get_dm_user_list_lightweight(user_id).await {
+            Ok(mut user_infos) => {
+                // Update online status based on who's actually connected
+                for user_info in &mut user_infos {
+                    user_info.status = if crate::services::BroadcastService::is_user_online(&self.peer_map, user_info.id).await {
+                        common::UserStatus::Connected
+                    } else {
+                        common::UserStatus::Offline
+                    };
                 }
-                Err(_) => {
-                    self.send_error(response_sender, "Failed to get DM user list");
-                }
+
+                // Convert UserInfo to User without profile images for better performance
+                let users = user_infos.into_iter().map(|info| User {
+                    id: info.id,
+                    username: info.username,
+                    color: info.color,
+                    role: info.role,
+                    profile_pic: None, // Exclude for performance
+                    cover_banner: None, // Exclude for performance
+                    status: info.status,
+                }).collect();
+                
+                let _ = response_sender.send(ServerMessage::DMUserList(users));
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to get DM users: {}", e);
+                let _ = response_sender.send(ServerMessage::Notification(error_msg, true));
             }
         }
         Ok(())
     }
 
-    /// Handle get servers
-    pub async fn handle_get_servers(
+    /// Handle channel messages with enhanced pagination
+    pub async fn handle_get_channel_messages_paginated(
         &self,
-        current_user: &Option<User>,
+        channel_id: Uuid,
+        cursor: PaginationCursor,
+        limit: Option<usize>,
+        direction: PaginationDirection,
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
-        if let Some(user) = current_user {
-            let servers = crate::db::servers::db_get_user_servers(user.id).await.unwrap_or_default();
-            self.send_response(response_sender, ServerMessage::Servers(servers));
+        let limit = limit.unwrap_or(50).min(200); // Safety limit to prevent abuse
+        let reverse_order = matches!(direction, PaginationDirection::Backward);
+        
+        let before = match cursor {
+            PaginationCursor::Timestamp(ts) => Some(ts),
+            PaginationCursor::Start => None,
+            PaginationCursor::Offset(_) => {
+                let _ = response_sender.send(ServerMessage::Notification(
+                    "Offset pagination not supported for messages".to_string(), 
+                    true
+                ));
+                return Ok(());
+            }
+        };
+
+        match channels::db_get_channel_messages_by_timestamp(channel_id, before, limit, reverse_order).await {
+            Ok((messages, has_more)) => {
+                let next_cursor = if has_more && !messages.is_empty() {
+                    match direction {
+                        PaginationDirection::Forward => Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp)),
+                        PaginationDirection::Backward => Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp)),
+                    }
+                } else {
+                    None
+                };
+
+                let prev_cursor = if !messages.is_empty() {
+                    match direction {
+                        PaginationDirection::Forward => Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp)),
+                        PaginationDirection::Backward => Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp)),
+                    }
+                } else {
+                    None
+                };
+
+                // Only get total count for small requests to avoid performance impact
+                let total_count = if limit <= 50 {
+                    channels::db_get_channel_message_count(channel_id).await.ok()
+                } else {
+                    None
+                };
+
+                let _ = response_sender.send(ServerMessage::ChannelMessagesPaginated {
+                    channel_id,
+                    messages,
+                    has_more,
+                    next_cursor,
+                    prev_cursor,
+                    total_count,
+                });
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to get channel messages: {}", e);
+                let _ = response_sender.send(ServerMessage::Notification(error_msg, true));
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle direct messages with enhanced pagination
+    pub async fn handle_get_direct_messages_paginated(
+        &self,
+        current_user_id: Uuid,
+        other_user_id: Uuid,
+        cursor: PaginationCursor,
+        limit: Option<usize>,
+        direction: PaginationDirection,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
+    ) -> crate::errors::Result<()> {
+        let limit = limit.unwrap_or(50).min(200); // Safety limit to prevent abuse
+        let reverse_order = matches!(direction, PaginationDirection::Backward);
+        
+        let before = match cursor {
+            PaginationCursor::Timestamp(ts) => Some(ts),
+            PaginationCursor::Start => None,
+            PaginationCursor::Offset(_) => {
+                let _ = response_sender.send(ServerMessage::Notification(
+                    "Offset pagination not supported for messages".to_string(), 
+                    true
+                ));
+                return Ok(());
+            }
+        };
+
+        match messages::db_get_direct_messages_by_timestamp(current_user_id, other_user_id, before, limit, reverse_order).await {
+            Ok((messages, has_more)) => {
+                let next_cursor = if has_more && !messages.is_empty() {
+                    match direction {
+                        PaginationDirection::Forward => Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp)),
+                        PaginationDirection::Backward => Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp)),
+                    }
+                } else {
+                    None
+                };
+
+                let prev_cursor = if !messages.is_empty() {
+                    match direction {
+                        PaginationDirection::Forward => Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp)),
+                        PaginationDirection::Backward => Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp)),
+                    }
+                } else {
+                    None
+                };
+
+                // Only get total count for small requests to avoid performance impact
+                let total_count = if limit <= 50 {
+                    messages::db_get_direct_message_count(current_user_id, other_user_id).await.ok()
+                } else {
+                    None
+                };
+
+                let _ = response_sender.send(ServerMessage::DirectMessagesPaginated {
+                    user_id: other_user_id,
+                    messages,
+                    has_more,
+                    next_cursor,
+                    prev_cursor,
+                    total_count,
+                });
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to get direct messages: {}", e);
+                let _ = response_sender.send(ServerMessage::Notification(error_msg, true));
+            }
         }
         Ok(())
     }

@@ -1,5 +1,5 @@
 use crate::db::invites::*;
-use crate::db::servers::{add_user_to_server, db_is_user_in_server};
+use crate::db::servers::{db_add_user_to_server, db_is_user_in_server};
 use crate::db::users::db_get_user_by_id;
 use crate::db::messages;
 use crate::errors::{Result, ServerError};
@@ -138,7 +138,9 @@ impl InviteService {
 
         // If accepted, add user to the server
         if accept {
-            add_user_to_server(invite.server.id, user_id).await?;
+            db_add_user_to_server(invite.server.id, user_id)
+                .await
+                .map_err(|e| ServerError::Database(e))?;
         }
 
         // Fetch the actual user data

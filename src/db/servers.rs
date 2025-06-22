@@ -184,18 +184,58 @@ pub async fn get_default_server_id() -> Result<Option<Uuid>, String> {
     .unwrap()
 }
 
-pub async fn add_user_to_server(server_id: Uuid, user_id: Uuid) -> Result<(), String> {
+/// Get all servers (simplified for user registration)
+pub async fn db_get_servers() -> Result<Vec<common::Server>, String> {
+    task::spawn_blocking(|| {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, owner FROM servers ORDER BY id LIMIT 1"
+        ).map_err(|e| e.to_string())?;
+        
+        let rows = stmt.query_map([], |row| {
+            let owner_str: String = row.get(3)?;
+            let owner_uuid = Uuid::parse_str(&owner_str).map_err(|_| rusqlite::Error::InvalidColumnType(3, "owner".to_string(), rusqlite::types::Type::Text))?;
+            
+            Ok(common::Server {
+                id: Uuid::parse_str(&row.get::<_, String>(0)?).map_err(|_| rusqlite::Error::InvalidColumnType(0, "id".to_string(), rusqlite::types::Type::Text))?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                public: true,
+                invite_code: None,
+                icon: None,
+                banner: None,
+                owner: owner_uuid,
+                mods: Vec::new(),
+                userlist: Vec::new(),
+                channels: Vec::new(),
+            })
+        }).map_err(|e| e.to_string())?;
+        
+        let mut servers = Vec::new();
+        for row in rows {
+            servers.push(row.map_err(|e| e.to_string())?);
+        }
+        
+        Ok(servers)
+    })
+    .await
+    .unwrap()
+}
+
+/// Add user to a server
+pub async fn db_add_user_to_server(server_id: Uuid, user_id: Uuid) -> Result<(), String> {
     let server_id_str = server_id.to_string();
     let user_id_str = user_id.to_string();
-
+    
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
-
+        
         conn.execute(
             "INSERT OR IGNORE INTO server_users (server_id, user_id) VALUES (?1, ?2)",
             params![server_id_str, user_id_str],
         ).map_err(|e| e.to_string())?;
-
+        
         Ok(())
     })
     .await
@@ -238,7 +278,7 @@ pub async fn ensure_default_server_exists() -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         let owner_id: String = stmt.query_row([], |row| row.get(0))
             .map_err(|_| "No admin user found".to_string())?;
-        let owner_uuid = Uuid::parse_str(&owner_id).map_err(|e| e.to_string())?;
+        let _owner_uuid = Uuid::parse_str(&owner_id).map_err(|e| e.to_string())?;
 
         // Create default server
         let server_id = Uuid::new_v4();
