@@ -138,7 +138,9 @@ impl InviteService {
 
         // If accepted, add user to the server
         if accept {
-            db_add_user_to_server(invite.server.id, user_id).await?;
+            db_add_user_to_server(invite.server.id, user_id)
+                .await
+                .map_err(|e| ServerError::Database(e))?;
         }
 
         // Fetch the actual user data
