@@ -202,7 +202,7 @@ pub async fn db_get_servers() -> Result<Vec<common::Server>, String> {
                 invite_code: None,
                 icon: None,
                 banner: None,
-                owner: Uuid::new_v4(), // Placeholder
+                owner: Uuid::parse_str(&row.get::<_, String>(3)?).map_err(|e| e.to_string())?, // Actual owner
                 mods: Vec::new(),
                 userlist: Vec::new(),
                 channels: Vec::new(),
