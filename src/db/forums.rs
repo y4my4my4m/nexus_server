@@ -209,6 +209,25 @@ pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> 
     .unwrap()
 }
 
+pub async fn db_create_forum(name: &str, description: &str) -> Result<(), String> {
+    let name = name.to_string();
+    let description = description.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let forum_id = Uuid::new_v4();
+
+        conn.execute(
+            "INSERT INTO forums (id, name, description) VALUES (?1, ?2, ?3)",
+            params![forum_id.to_string(), name, description],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
 pub async fn db_delete_post(post_id: Uuid, user_id: Uuid) -> Result<(), String> {
     let post_id_str = post_id.to_string();
     let user_id_str = user_id.to_string();
@@ -291,6 +310,36 @@ pub async fn db_delete_thread(thread_id: Uuid, user_id: Uuid) -> Result<(), Stri
         conn.execute(
             "DELETE FROM threads WHERE id = ?1",
             params![thread_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn db_delete_forum(forum_id: Uuid) -> Result<(), String> {
+    let forum_id_str = forum_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+
+        // Delete all posts in threads of this forum first
+        conn.execute(
+            "DELETE FROM posts WHERE thread_id IN (SELECT id FROM threads WHERE forum_id = ?1)",
+            params![forum_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        // Delete all threads in this forum
+        conn.execute(
+            "DELETE FROM threads WHERE forum_id = ?1",
+            params![forum_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        // Delete the forum
+        conn.execute(
+            "DELETE FROM forums WHERE id = ?1",
+            params![forum_id_str],
         ).map_err(|e| e.to_string())?;
 
         Ok(())

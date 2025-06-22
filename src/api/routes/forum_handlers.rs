@@ -15,6 +15,67 @@ impl MessageRouter {
         Ok(())
     }
 
+    /// Handle create forum (Admin only)
+    pub async fn handle_create_forum(
+        &self,
+        current_user: &Option<User>,
+        name: String,
+        description: String,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
+    ) -> crate::errors::Result<()> {
+        if let Some(user) = current_user {
+            if user.role == common::UserRole::Admin {
+                match db::forums::db_create_forum(&name, &description).await {
+                    Ok(_) => {
+                        self.send_success(response_sender, "Forum created successfully");
+                        
+                        // Refresh forums to show new forum
+                        let forums = db::forums::db_get_forums().await.unwrap_or_default();
+                        self.send_response(response_sender, ServerMessage::Forums(forums));
+                    }
+                    Err(e) => {
+                        self.send_error(response_sender, &format!("Failed to create forum: {}", e));
+                    }
+                }
+            } else {
+                self.send_error(response_sender, "Only admins can create forums");
+            }
+        } else {
+            self.send_error(response_sender, "Must be logged in to create forums");
+        }
+        Ok(())
+    }
+
+    /// Handle delete forum (Admin only)
+    pub async fn handle_delete_forum(
+        &self,
+        current_user: &Option<User>,
+        forum_id: Uuid,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
+    ) -> crate::errors::Result<()> {
+        if let Some(user) = current_user {
+            if user.role == common::UserRole::Admin {
+                match db::forums::db_delete_forum(forum_id).await {
+                    Ok(_) => {
+                        self.send_success(response_sender, "Forum deleted successfully");
+                        
+                        // Refresh forums to show updated list
+                        let forums = db::forums::db_get_forums().await.unwrap_or_default();
+                        self.send_response(response_sender, ServerMessage::Forums(forums));
+                    }
+                    Err(e) => {
+                        self.send_error(response_sender, &format!("Failed to delete forum: {}", e));
+                    }
+                }
+            } else {
+                self.send_error(response_sender, "Only admins can delete forums");
+            }
+        } else {
+            self.send_error(response_sender, "Must be logged in to delete forums");
+        }
+        Ok(())
+    }
+
     /// Handle create thread
     pub async fn handle_create_thread(
         &self,

@@ -89,6 +89,12 @@ impl MessageRouter {
             ClientMessage::GetForums => {
                 self.handle_get_forums(response_sender).await
             }
+            ClientMessage::CreateForum { name, description } => {
+                self.handle_create_forum(current_user, name, description, response_sender).await
+            }
+            ClientMessage::DeleteForum { forum_id } => {
+                self.handle_delete_forum(current_user, forum_id, response_sender).await
+            }
             ClientMessage::CreateThread { forum_id, title, content } => {
                 self.handle_create_thread(current_user, forum_id, title, content, response_sender).await
             }
