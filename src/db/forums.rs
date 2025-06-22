@@ -1,4 +1,4 @@
-use crate::util::parse_color;
+use crate::util::{parse_color, parse_user_color};
 use common::{Forum, Thread, Post, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
@@ -63,7 +63,7 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
                 let author = User {
                     id: Uuid::parse_str(&user_id).unwrap(),
                     username,
-                    color: parse_color(&color),
+                    color: parse_user_color(&color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
@@ -111,7 +111,7 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
                     let post_author = User {
                         id: Uuid::parse_str(&puser_id).unwrap(),
                         username: pusername,
-                        color: parse_color(&pcolor),
+                        color: parse_user_color(&pcolor),
                         role: match prole.as_str() {
                             "Admin" => UserRole::Admin,
                             "Moderator" => UserRole::Moderator,
@@ -201,6 +201,145 @@ pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> 
         conn.execute(
             "INSERT INTO posts (id, thread_id, author_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![post_id.to_string(), thread_id_str, author_id_str, content, now],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn db_create_forum(name: &str, description: &str) -> Result<(), String> {
+    let name = name.to_string();
+    let description = description.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let forum_id = Uuid::new_v4();
+
+        conn.execute(
+            "INSERT INTO forums (id, name, description) VALUES (?1, ?2, ?3)",
+            params![forum_id.to_string(), name, description],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn db_delete_post(post_id: Uuid, user_id: Uuid) -> Result<(), String> {
+    let post_id_str = post_id.to_string();
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        // Check if the user owns the post or is an admin/moderator
+        let mut stmt = conn.prepare(
+            "SELECT author_id FROM posts WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let post_author_id: String = stmt.query_row(params![post_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "Post not found".to_string())?;
+        
+        // Check user role
+        let mut user_stmt = conn.prepare(
+            "SELECT role FROM users WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let user_role: String = user_stmt.query_row(params![user_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "User not found".to_string())?;
+        
+        // Allow deletion if user owns the post or is admin/moderator
+        if post_author_id != user_id_str && user_role != "Admin" && user_role != "Moderator" {
+            return Err("Permission denied: You can only delete your own posts".to_string());
+        }
+        
+        // Delete the post
+        conn.execute(
+            "DELETE FROM posts WHERE id = ?1",
+            params![post_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn db_delete_thread(thread_id: Uuid, user_id: Uuid) -> Result<(), String> {
+    let thread_id_str = thread_id.to_string();
+    let user_id_str = user_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        // Check if the user owns the thread or is an admin/moderator
+        let mut stmt = conn.prepare(
+            "SELECT author_id FROM threads WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let thread_author_id: String = stmt.query_row(params![thread_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "Thread not found".to_string())?;
+        
+        // Check user role
+        let mut user_stmt = conn.prepare(
+            "SELECT role FROM users WHERE id = ?1"
+        ).map_err(|e| e.to_string())?;
+        
+        let user_role: String = user_stmt.query_row(params![user_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "User not found".to_string())?;
+        
+        // Allow deletion if user owns the thread or is admin/moderator
+        if thread_author_id != user_id_str && user_role != "Admin" && user_role != "Moderator" {
+            return Err("Permission denied: You can only delete your own threads".to_string());
+        }
+        
+        // Delete all posts in the thread first (foreign key constraint)
+        conn.execute(
+            "DELETE FROM posts WHERE thread_id = ?1",
+            params![thread_id_str],
+        ).map_err(|e| e.to_string())?;
+        
+        // Delete the thread
+        conn.execute(
+            "DELETE FROM threads WHERE id = ?1",
+            params![thread_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        Ok(())
+    })
+    .await
+    .unwrap()
+}
+
+pub async fn db_delete_forum(forum_id: Uuid) -> Result<(), String> {
+    let forum_id_str = forum_id.to_string();
+
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+
+        // Delete all posts in threads of this forum first
+        conn.execute(
+            "DELETE FROM posts WHERE thread_id IN (SELECT id FROM threads WHERE forum_id = ?1)",
+            params![forum_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        // Delete all threads in this forum
+        conn.execute(
+            "DELETE FROM threads WHERE forum_id = ?1",
+            params![forum_id_str],
+        ).map_err(|e| e.to_string())?;
+
+        // Delete the forum
+        conn.execute(
+            "DELETE FROM forums WHERE id = ?1",
+            params![forum_id_str],
         ).map_err(|e| e.to_string())?;
 
         Ok(())

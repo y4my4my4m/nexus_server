@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::error::Error;
 use tokio::net::TcpStream;
 use crate::errors::Result;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use uuid::Uuid;
 use futures::{SinkExt, StreamExt};
-use tracing::error;
+use tracing::{error, info};
 use common::{ClientMessage, ServerMessage};
 
+use crate::api::routes::MessageRouter;
 use crate::db;
-use crate::services::{UserService, ChatService, NotificationService, BroadcastService};
-use regex;
+use crate::services::BroadcastService;
 
 /// Represents a connected peer/client
 pub struct Peer {
@@ -21,6 +22,35 @@ pub struct Peer {
 
 /// Thread-safe map of all connected peers
 pub type PeerMap = Arc<Mutex<HashMap<Uuid, Peer>>>;
+
+/// Handle user disconnect and broadcast status change
+async fn handle_user_disconnect(peer_map: &PeerMap, peer_id: Uuid, reason: &str) {
+    info!("Handling user disconnect for peer {}: {}", peer_id, reason);
+    
+    // Get user info before cleanup
+    let user_id_opt = {
+        let peers = peer_map.lock().await;
+        peers.get(&peer_id).and_then(|p| p.user_id)
+    };
+    
+    // Broadcast user disconnect if they were authenticated
+    if let Some(user_id) = user_id_opt {
+        if let Ok(profile) = db::users::db_get_user_by_id(user_id).await {
+            let user = common::User {
+                id: profile.id,
+                username: profile.username.clone(),
+                color: profile.color,
+                role: profile.role,
+                profile_pic: profile.profile_pic,
+                cover_banner: profile.cover_banner,
+                status: common::UserStatus::Offline,
+            };
+            
+            info!("Broadcasting disconnect for user: {} ({})", user.username, reason);
+            BroadcastService::broadcast_user_status_change(peer_map, &user, false).await;
+        }
+    }
+}
 
 /// Main connection handler - processes client connections and messages
 pub async fn handle_connection(
@@ -47,308 +77,42 @@ pub async fn handle_connection(
     let peer_map_task = peer_map.clone();
     tokio::spawn(async move {
         let mut current_user: Option<common::User> = None;
+        let router = MessageRouter::new(peer_map_task.clone());
         
         loop {
             tokio::select! {
-                Some(Ok(msg)) = stream.next() => {
-                    match bincode::deserialize::<ClientMessage>(&msg) {
-                        Ok(message) => {
-                            tracing::info!("Parsed ClientMessage: {:?}", message);
-                            
-                            match message {
-                                ClientMessage::Register { username, password } => {
-                                    match UserService::register(&username, &password, &peer_map_task).await {
-                                        Ok(user) => {
-                                            // Update peer map
-                                            let mut peers = peer_map_task.lock().await;
-                                            if let Some(peer) = peers.get_mut(&peer_id) {
-                                                peer.user_id = Some(user.id);
-                                            }
-                                            current_user = Some(user.clone());
-                                            let response = ServerMessage::AuthSuccess(user);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                        Err(e) => {
-                                            let response = ServerMessage::AuthFailure(e.to_string());
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                    }
-                                }
-                                ClientMessage::Login { username, password } => {
-                                    match UserService::login(&username, &password, &peer_map_task).await {
-                                        Ok(user) => {
-                                            // Update peer map
-                                            let mut peers = peer_map_task.lock().await;
-                                            if let Some(peer) = peers.get_mut(&peer_id) {
-                                                peer.user_id = Some(user.id);
-                                            }
-                                            current_user = Some(user.clone());
-                                            let response = ServerMessage::AuthSuccess(user);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                        Err(e) => {
-                                            let response = ServerMessage::AuthFailure(e.to_string());
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                    }
-                                }
-                                ClientMessage::Logout => {
-                                    if let Some(user) = &current_user {
-                                        UserService::logout(user, &peer_map_task).await;
-                                    }
+                stream_result = stream.next() => {
+                    match stream_result {
+                        Some(Ok(msg)) => {
+                            match bincode::deserialize::<ClientMessage>(&msg) {
+                                Ok(message) => {
+                                    tracing::info!("Parsed ClientMessage: {:?}", message);
                                     
-                                    let mut peers = peer_map_task.lock().await;
-                                    if let Some(peer) = peers.get_mut(&peer_id) {
-                                        peer.user_id = None;
-                                    }
-                                    current_user = None;
-                                }
-                                ClientMessage::UpdatePassword(new_password) => {
-                                    if let Some(user) = &current_user {
-                                        let _ = UserService::update_password(user.id, &new_password).await;
-                                    }
-                                }
-                                ClientMessage::UpdateColor(color) => {
-                                    if let Some(user) = &current_user {
-                                        let color_str = match color.0 {
-                                            ratatui::style::Color::Rgb(r, g, b) => format!("#{:02X}{:02X}{:02X}", r, g, b),
-                                            other => format!("{:?}", other),
-                                        };
-                                        if let Ok(updated_user) = UserService::update_color(user.id, &color_str, &peer_map_task).await {
-                                            current_user = Some(updated_user);
-                                        }
+                                    // Use the router to handle the message
+                                    if let Err(e) = router.handle_message(
+                                        message,
+                                        &mut current_user,
+                                        peer_id,
+                                        &tx,
+                                    ).await {
+                                        error!("Error handling message: {:?}", e);
                                     }
                                 }
-                                ClientMessage::UpdateProfile { bio, url1, url2, url3, location, profile_pic, cover_banner } => {
-                                    if let Some(user) = &current_user {
-                                        let _ = UserService::update_profile(
-                                            user.id, bio, url1, url2, url3, location, profile_pic, cover_banner, &peer_map_task
-                                        ).await;
-                                    }
-                                }
-                                ClientMessage::GetProfile { user_id } => {
-                                    match UserService::get_profile(user_id).await {
-                                        Ok(profile) => {
-                                            let response = ServerMessage::Profile(profile);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                        Err(e) => {
-                                            let response = ServerMessage::Notification(format!("Failed to load profile: {}", e), true);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                    }
-                                }
-                                ClientMessage::GetUserList => {
-                                    match UserService::get_user_list(&peer_map_task).await {
-                                        Ok(users) => {
-                                            let response = ServerMessage::UserList(users);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                        Err(_) => {
-                                            let response = ServerMessage::Notification("Failed to get user list".to_string(), true);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                    }
-                                }
-                                ClientMessage::SendChannelMessage { channel_id, content } => {
-                                    if let Some(user) = &current_user {
-                                        let _ = ChatService::send_channel_message(channel_id, user, &content, &peer_map_task).await;
-                                    }
-                                }
-                                ClientMessage::SendDirectMessage { to, content } => {
-                                    if let Some(user) = &current_user {
-                                        let _ = ChatService::send_direct_message(user, to, &content, &peer_map_task).await;
-                                    }
-                                }
-                                ClientMessage::SendServerInvite { to_user_id, server_id } => {
-                                    if let Some(user) = &current_user {
-                                        match crate::services::InviteService::send_server_invite(user.id, to_user_id, server_id, &peer_map_task).await {
-                                            Ok(_) => {
-                                                let response = ServerMessage::Notification("Server invite sent successfully!".to_string(), false);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(e) => {
-                                                let response = ServerMessage::Notification(format!("Failed to send invite: {}", e), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::RespondToServerInvite { invite_id, accept } => {
-                                    if let Some(user) = &current_user {
-                                        match crate::services::InviteService::respond_to_invite(invite_id, user.id, accept, &peer_map_task).await {
-                                            Ok(_) => {
-                                                let action = if accept { "accepted" } else { "declined" };
-                                                let response = ServerMessage::Notification(format!("Server invite {} successfully!", action), false);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                                
-                                                // If accepted, refresh the user's server list
-                                                if accept {
-                                                    let servers = db::servers::db_get_user_servers(user.id).await.unwrap_or_default();
-                                                    let response = ServerMessage::Servers(servers);
-                                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                let response = ServerMessage::Notification(format!("Failed to respond to invite: {}", e), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::AcceptServerInviteFromUser { from_user_id } => {
-                                    if let Some(user) = &current_user {
-                                        match crate::services::InviteService::respond_to_invite_from_user(from_user_id, user.id, true, &peer_map_task).await {
-                                            Ok(_) => {
-                                                let response = ServerMessage::Notification("Server invite accepted successfully!".to_string(), false);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                                
-                                                // Refresh the user's server list
-                                                let servers = db::servers::db_get_user_servers(user.id).await.unwrap_or_default();
-                                                let response = ServerMessage::Servers(servers);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(e) => {
-                                                let response = ServerMessage::Notification(format!("Failed to accept invite: {}", e), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::DeclineServerInviteFromUser { from_user_id } => {
-                                    if let Some(user) = &current_user {
-                                        match crate::services::InviteService::respond_to_invite_from_user(from_user_id, user.id, false, &peer_map_task).await {
-                                            Ok(_) => {
-                                                let response = ServerMessage::Notification("Server invite declined.".to_string(), false);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(e) => {
-                                                let response = ServerMessage::Notification(format!("Failed to decline invite: {}", e), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::GetChannelMessages { channel_id, before } => {
-                                    match ChatService::get_channel_messages(channel_id, before, 50).await {
-                                        Ok((messages, history_complete)) => {
-                                            let response = ServerMessage::ChannelMessages { channel_id, messages, history_complete };
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                        Err(_) => {
-                                            let response = ServerMessage::Notification("Failed to load messages".to_string(), true);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                    }
-                                }
-                                ClientMessage::GetDirectMessages { user_id, before } => {
-                                    if let Some(user) = &current_user {
-                                        match ChatService::get_direct_messages(user.id, user_id, before, 50).await {
-                                            Ok((messages, history_complete)) => {
-                                                let response = ServerMessage::DirectMessages { user_id, messages, history_complete };
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(_) => {
-                                                let response = ServerMessage::Notification("Failed to load DMs".to_string(), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::GetChannelUserList { channel_id } => {
-                                    match ChatService::get_channel_users(channel_id, &peer_map_task).await {
-                                        Ok(users) => {
-                                            let response = ServerMessage::ChannelUserList { channel_id, users };
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                        Err(_) => {
-                                            let response = ServerMessage::Notification("Failed to get channel users".to_string(), true);
-                                            let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                        }
-                                    }
-                                }
-                                ClientMessage::GetDMUserList => {
-                                    if let Some(user) = &current_user {
-                                        match ChatService::get_dm_user_list(user.id, &peer_map_task).await {
-                                            Ok(users) => {
-                                                let response = ServerMessage::DMUserList(users);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(_) => {
-                                                let response = ServerMessage::Notification("Failed to get DM user list".to_string(), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::GetNotifications { before } => {
-                                    if let Some(user) = &current_user {
-                                        match NotificationService::get_notifications(user.id, before).await {
-                                            Ok((notifications, history_complete)) => {
-                                                let response = ServerMessage::Notifications { notifications, history_complete };
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(_) => {
-                                                let response = ServerMessage::Notification("Failed to get notifications".to_string(), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::MarkNotificationRead { notification_id } => {
-                                    let _ = NotificationService::mark_notification_read(notification_id).await;
-                                }
-                                ClientMessage::GetForums => {
-                                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                                    let response = ServerMessage::Forums(forums);
-                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                }
-                                ClientMessage::GetServers => {
-                                    if let Some(user) = &current_user {
-                                        let servers = db::servers::db_get_user_servers(user.id).await.unwrap_or_default();
-                                        let response = ServerMessage::Servers(servers);
-                                        let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                    }
-                                }
-                                ClientMessage::CreatePost { thread_id, content } => {
-                                    if let Some(user) = &current_user {
-                                        match db::forums::db_create_post(thread_id, user.id, &content).await {
-                                            Ok(_) => {
-                                                let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                                                let response = ServerMessage::Forums(forums);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(e) => {
-                                                let response = ServerMessage::Notification(format!("Failed to create post: {}", e), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::CreateThread { forum_id, title, content } => {
-                                    if let Some(user) = &current_user {
-                                        match db::forums::db_create_thread(forum_id, &title, user.id, &content).await {
-                                            Ok(_) => {
-                                                let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                                                let response = ServerMessage::Forums(forums);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                            Err(e) => {
-                                                let response = ServerMessage::Notification(format!("Failed to create thread: {}", e), true);
-                                                let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
-                                            }
-                                        }
-                                    }
-                                }
-                                ClientMessage::DeletePost(_) | ClientMessage::DeleteThread(_) => {
-                                    // TODO: Implement delete functionality
-                                    let response = ServerMessage::Notification("Delete functionality not yet implemented".to_string(), true);
-                                    let _ = sink.send(bincode::serialize(&response).unwrap().into()).await;
+                                Err(e) => {
+                                    error!("Error parsing message: {:?}", e);
                                 }
                             }
                         }
-                        Err(e) => {
-                            error!("Error parsing message: {:?}", e);
+                        Some(Err(e)) => {
+                            // Handle stream errors (connection issues, broken pipe from read side)
+                            error!("Stream error: {:?}", e);
+                            handle_user_disconnect(&peer_map_task, peer_id, "stream error").await;
+                            break;
+                        }
+                        None => {
+                            // Stream ended
+                            handle_user_disconnect(&peer_map_task, peer_id, "stream ended").await;
+                            break;
                         }
                     }
                 }
@@ -356,6 +120,13 @@ pub async fn handle_connection(
                     tracing::info!("Sending ServerMessage: {:?}", msg);
                     if let Err(e) = sink.send(bincode::serialize(&msg).unwrap().into()).await {
                         error!("Error sending message: {:?}", e);
+                        
+                        // Check if it's a broken pipe error for immediate handling
+                        if let Some(io_error) = e.source().and_then(|e| e.downcast_ref::<std::io::Error>()) {
+                            if io_error.kind() == std::io::ErrorKind::BrokenPipe {
+                                handle_user_disconnect(&peer_map_task, peer_id, "broken pipe").await;
+                            }
+                        }
                         break;
                     }
                 }
@@ -363,25 +134,17 @@ pub async fn handle_connection(
             }
         }
         
-        // Cleanup on disconnect
-        let mut peers = peer_map_task.lock().await;
-        let user_id_opt = peers.get(&peer_id).and_then(|p| p.user_id);
-        peers.remove(&peer_id);
-        drop(peers);
+        // Final cleanup - remove from peer map and handle any remaining disconnect
+        let was_authenticated = {
+            let mut peers = peer_map_task.lock().await;
+            let was_auth = peers.get(&peer_id).and_then(|p| p.user_id).is_some();
+            peers.remove(&peer_id);
+            was_auth
+        };
         
-        if let Some(user_id) = user_id_opt {
-            if let Ok(profile) = db::users::db_get_user_by_id(user_id).await {
-                let user = common::User {
-                    id: profile.id,
-                    username: profile.username,
-                    color: profile.color,
-                    role: profile.role,
-                    profile_pic: profile.profile_pic,
-                    cover_banner: profile.cover_banner,
-                    status: common::UserStatus::Connected,
-                };
-                BroadcastService::broadcast_user_status_change(&peer_map_task, &user, false).await;
-            }
+        // Only do final disconnect handling if we haven't already handled it above
+        if was_authenticated {
+            handle_user_disconnect(&peer_map_task, peer_id, "connection cleanup").await;
         }
     });
     

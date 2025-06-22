@@ -1,5 +1,5 @@
 use crate::auth::{hash_password, verify_password};
-use crate::util::parse_color;
+use crate::util::parse_user_color;
 use common::{UserProfile, UserRole};
 use rusqlite::{params, Connection, Result as SqlResult};
 use tokio::task;
@@ -62,7 +62,7 @@ pub async fn db_register_user(
             id,
             username,
             hash: String::new(), // Don't return password hash
-            color: parse_color(&color),
+            color: parse_user_color(&color),
             role: match role.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
@@ -111,7 +111,7 @@ pub async fn db_login_user(username: &str, password: &str) -> Result<UserProfile
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
             hash: String::new(), // Don't return password hash
-            color: parse_color(&user.3),
+            color: parse_user_color(&user.3),
             role: match user.4.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
@@ -164,7 +164,7 @@ pub async fn db_get_user_by_id(user_id: Uuid) -> Result<UserProfile, String> {
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
             hash: String::new(), // Don't return password hash
-            color: parse_color(&user.3),
+            color: parse_user_color(&user.3),
             role: match user.4.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
@@ -217,7 +217,7 @@ pub async fn db_get_user_by_username(username: &str) -> Result<UserProfile, Stri
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
             hash: String::new(), // Don't return password hash
-            color: parse_color(&user.3),
+            color: parse_user_color(&user.3),
             role: match user.4.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,
@@ -335,7 +335,7 @@ pub async fn db_get_user_profile(user_id: Uuid) -> Result<UserProfile, String> {
             id: Uuid::parse_str(&user.0).unwrap(),
             username: user.1,
             hash: String::new(), // Don't return password hash
-            color: parse_color(&user.9),
+            color: parse_user_color(&user.9),
             role: match user.10.as_str() {
                 "Admin" => UserRole::Admin,
                 "Moderator" => UserRole::Moderator,

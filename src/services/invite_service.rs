@@ -8,7 +8,6 @@ use crate::api::connection::PeerMap;
 use common::{ServerInvite, ServerInviteStatus, ServerMessage, User, DirectMessage};
 use tracing::{error, info};
 use uuid::Uuid;
-use ratatui::style::Color;
 
 pub struct InviteService;
 

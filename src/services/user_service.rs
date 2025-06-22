@@ -2,6 +2,7 @@ use crate::db::users;
 use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;
 use crate::api::connection::PeerMap;
+use crate::auth::validate_password;
 use common::{User, UserProfile, UserStatus};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -15,6 +16,10 @@ impl UserService {
         password: &str,
         peer_map: &PeerMap,
     ) -> Result<User> {
+        // Validate password
+        validate_password(password)
+            .map_err(|e| ServerError::Validation(e))?;
+            
         // Check if this is the first user (make them admin)
         let is_first_user = users::db_count_users().await? == 0;
         let role = if is_first_user { "Admin" } else { "User" };
@@ -32,7 +37,7 @@ impl UserService {
         let user = User {
             id: profile.id,
             username: profile.username.clone(),
-            color: profile.color,
+            color: profile.color.into(),
             role: profile.role,
             profile_pic: profile.profile_pic,
             cover_banner: profile.cover_banner,
@@ -58,7 +63,7 @@ impl UserService {
         let user = User {
             id: profile.id,
             username: profile.username.clone(),
-            color: profile.color,
+            color: profile.color.into(),
             role: profile.role,
             profile_pic: profile.profile_pic,
             cover_banner: profile.cover_banner,
@@ -106,7 +111,7 @@ impl UserService {
             let updated_user = User {
                 id: full_user.id,
                 username: full_user.username,
-                color: full_user.color,
+                color: full_user.color.into(),
                 role: full_user.role,
                 profile_pic: full_user.profile_pic,
                 cover_banner: full_user.cover_banner,
@@ -136,8 +141,8 @@ impl UserService {
 
         let updated_user = User {
             id: profile.id,
-            username: profile.username,
-            color: profile.color,
+            username: profile.username.clone(),
+            color: profile.color.into(),
             role: profile.role,
             profile_pic: profile.profile_pic,
             cover_banner: profile.cover_banner,
@@ -153,6 +158,10 @@ impl UserService {
 
     /// Update user password
     pub async fn update_password(user_id: Uuid, new_password: &str) -> Result<()> {
+        // Validate password
+        validate_password(new_password)
+            .map_err(|e| ServerError::Validation(e))?;
+            
         users::db_update_user_password(user_id, new_password).await
             .map_err(|e| ServerError::Database(e))?;
 
@@ -176,7 +185,7 @@ impl UserService {
                 users.push(User {
                     id: profile.id,
                     username: profile.username,
-                    color: profile.color,
+                    color: profile.color.into(),
                     role: profile.role,
                     profile_pic: profile.profile_pic,
                     cover_banner: profile.cover_banner,

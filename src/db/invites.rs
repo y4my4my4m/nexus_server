@@ -68,7 +68,7 @@ pub async fn db_get_pending_invites_for_user(user_id: Uuid) -> Result<Vec<Server
             let from_user = User {
                 id: Uuid::from_str(&row.get::<_, String>(1)?).unwrap(),
                 username: row.get(6)?,
-                color,
+                color: color.into(),
                 role,
                 profile_pic: row.get(9)?,
                 cover_banner: row.get(10)?,
@@ -164,7 +164,7 @@ pub async fn db_get_invite_by_id(invite_id: Uuid) -> Result<Option<ServerInvite>
             let from_user = User {
                 id: Uuid::from_str(&row.get::<_, String>(1)?).unwrap(),
                 username: row.get(6)?,
-                color,
+                color: color.into(),
                 role,
                 profile_pic: row.get(9)?,
                 cover_banner: row.get(10)?,
@@ -271,7 +271,7 @@ pub async fn db_get_pending_invite_from_user(
             let from_user = User {
                 id: Uuid::from_str(&row.get::<_, String>(1)?).unwrap(),
                 username: row.get(6)?,
-                color,
+                color: color.into(),
                 role,
                 profile_pic: row.get(9)?,
                 cover_banner: row.get(10)?,
