@@ -198,7 +198,7 @@ pub async fn db_get_dm_user_list_lightweight(user_id: Uuid) -> Result<Vec<UserIn
                         "Moderator" => UserRole::Moderator,
                         _ => UserRole::User,
                     },
-                    status: UserStatus::Connected,
+                    status: UserStatus::Offline, // Default to offline, will be updated by server
                 });
             }
         }

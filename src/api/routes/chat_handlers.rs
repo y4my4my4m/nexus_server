@@ -94,7 +94,16 @@ impl MessageRouter {
     ) -> crate::errors::Result<()> {
         // Always use lightweight version for better performance
         match channels::db_get_channel_user_list_lightweight(channel_id).await {
-            Ok(user_infos) => {
+            Ok(mut user_infos) => {
+                // Update online status based on who's actually connected
+                for user_info in &mut user_infos {
+                    user_info.status = if crate::services::BroadcastService::is_user_online(&self.peer_map, user_info.id).await {
+                        common::UserStatus::Connected
+                    } else {
+                        common::UserStatus::Offline
+                    };
+                }
+
                 // Convert UserInfo to User without profile images for better performance
                 let users = user_infos.into_iter().map(|info| User {
                     id: info.id,
@@ -124,7 +133,16 @@ impl MessageRouter {
     ) -> crate::errors::Result<()> {
         // Always use lightweight version for better performance
         match messages::db_get_dm_user_list_lightweight(user_id).await {
-            Ok(user_infos) => {
+            Ok(mut user_infos) => {
+                // Update online status based on who's actually connected
+                for user_info in &mut user_infos {
+                    user_info.status = if crate::services::BroadcastService::is_user_online(&self.peer_map, user_info.id).await {
+                        common::UserStatus::Connected
+                    } else {
+                        common::UserStatus::Offline
+                    };
+                }
+
                 // Convert UserInfo to User without profile images for better performance
                 let users = user_infos.into_iter().map(|info| User {
                     id: info.id,

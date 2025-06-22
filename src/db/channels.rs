@@ -198,7 +198,7 @@ pub async fn db_get_channel_user_list_lightweight(channel_id: Uuid) -> Result<Ve
                     "Moderator" => UserRole::Moderator,
                     _ => UserRole::User,
                 },
-                status: UserStatus::Connected,
+                status: UserStatus::Offline, // Default to offline, will be updated by server
             })
         }).map_err(|e| e.to_string())?;
 
