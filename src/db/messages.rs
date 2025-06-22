@@ -1,4 +1,4 @@
-use crate::util::{parse_color, parse_user_color};
+use crate::util::parse_user_color;
 use common::{DirectMessage, User, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;

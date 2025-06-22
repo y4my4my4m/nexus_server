@@ -7,5 +7,3 @@ pub mod servers;
 pub mod forums;
 pub mod invites;
 
-pub use migrations::init_db;
-pub use servers::ensure_default_server_exists;

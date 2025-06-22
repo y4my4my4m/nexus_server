@@ -1,10 +1,8 @@
-use crate::services::{UserService, ChatService, NotificationService, InviteService};
 use crate::api::connection::PeerMap;
-use crate::db;
 use crate::errors::Result;
 use common::{ClientMessage, ServerMessage, User};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::error;
 use uuid::Uuid;
 
 /// Message router that dispatches client messages to appropriate handlers
@@ -167,9 +165,3 @@ mod notification_handlers;
 mod cache_handlers;
 
 // Re-export handler implementations
-pub use auth_handlers::*;
-pub use chat_handlers::*;
-pub use forum_handlers::*;
-pub use invite_handlers::*;
-pub use notification_handlers::*;
-pub use cache_handlers::*;

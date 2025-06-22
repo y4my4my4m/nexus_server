@@ -3,7 +3,6 @@ use crate::services::ChatService;
 use crate::services::chat_service::{PaginationRequest, PaginationCursor, PaginationDirection};
 use common::{ServerMessage, User, PaginationCursor as CommonCursor, PaginationDirection as CommonDirection};
 use tokio::sync::mpsc;
-use tracing::info;
 use uuid::Uuid;
 use std::time::Instant;
 

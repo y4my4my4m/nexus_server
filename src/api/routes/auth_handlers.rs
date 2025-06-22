@@ -1,9 +1,7 @@
 use super::MessageRouter;
 use crate::services::UserService;
-use crate::api::connection::PeerMap;
 use common::{ServerMessage, User, UserColor};
 use tokio::sync::mpsc;
-use tracing::info;
 use uuid::Uuid;
 
 impl MessageRouter {

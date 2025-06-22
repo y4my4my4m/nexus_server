@@ -3,7 +3,7 @@ use crate::errors::{Result, ServerError};
 use crate::services::{BroadcastService, NotificationService};
 use crate::api::connection::PeerMap;
 use common::{ChannelMessage, DirectMessage, ServerMessage, User};
-use tracing::{error, info};
+use tracing::info;
 use uuid::Uuid;
 
 /// Configuration for pagination

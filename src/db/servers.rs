@@ -1,5 +1,4 @@
-use crate::util::{parse_color, parse_user_color};
-use common::{Server, Channel, ChannelPermissions, User, UserRole, UserStatus};
+use common::Server;
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;

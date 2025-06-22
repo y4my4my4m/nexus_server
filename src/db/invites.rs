@@ -1,6 +1,6 @@
 use crate::errors::{Result, ServerError};
 use common::{ServerInvite, ServerInviteStatus, User, Server};
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Connection};
 use uuid::Uuid;
 use std::str::FromStr;
 
