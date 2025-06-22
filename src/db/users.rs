@@ -89,17 +89,25 @@ pub async fn db_login_user(username: &str, password: &str) -> Result<UserProfile
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
 
         let mut stmt = conn
-            .prepare("SELECT id, username, password_hash, color, role FROM users WHERE LOWER(username) = ?1")
+            .prepare("SELECT id, username, password_hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner FROM users WHERE LOWER(username) = ?1")
             .map_err(|e| e.to_string())?;
 
         let user = stmt
             .query_row(params![username_lower], |row| {
-                let id: String = row.get(0)?;
-                let username: String = row.get(1)?;
-                let hash: String = row.get(2)?;
-                let color: String = row.get(3)?;
-                let role: String = row.get(4)?;
-                Ok((id, username, hash, color, role))
+                Ok((
+                    row.get::<_, String>(0)?,      // id
+                    row.get::<_, String>(1)?,      // username
+                    row.get::<_, String>(2)?,      // password_hash
+                    row.get::<_, String>(3)?,      // color
+                    row.get::<_, String>(4)?,      // role
+                    row.get::<_, Option<String>>(5)?,  // bio
+                    row.get::<_, Option<String>>(6)?,  // url1
+                    row.get::<_, Option<String>>(7)?,  // url2
+                    row.get::<_, Option<String>>(8)?,  // url3
+                    row.get::<_, Option<String>>(9)?,  // location
+                    row.get::<_, Option<String>>(10)?, // profile_pic
+                    row.get::<_, Option<String>>(11)?, // cover_banner
+                ))
             })
             .map_err(|_| "Invalid credentials".to_string())?;
 
@@ -117,13 +125,13 @@ pub async fn db_login_user(username: &str, password: &str) -> Result<UserProfile
                 "Moderator" => UserRole::Moderator,
                 _ => UserRole::User,
             },
-            bio: None,
-            url1: None,
-            url2: None,
-            url3: None,
-            location: None,
-            profile_pic: None,
-            cover_banner: None,
+            bio: user.5,
+            url1: user.6,
+            url2: user.7,
+            url3: user.8,
+            location: user.9,
+            profile_pic: user.10,    // Now fetched from database!
+            cover_banner: user.11,   // Now fetched from database!
         })
     })
     .await
