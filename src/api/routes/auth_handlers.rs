@@ -90,10 +90,17 @@ impl MessageRouter {
         &self,
         current_user: &Option<User>,
         new_password: String,
-        _response_sender: &mpsc::UnboundedSender<ServerMessage>,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            let _ = UserService::update_password(user.id, &new_password).await;
+            match UserService::update_password(user.id, &new_password).await {
+                Ok(_) => {
+                    self.send_success(response_sender, "Password updated successfully!");
+                }
+                Err(e) => {
+                    self.send_error(response_sender, &format!("Failed to update password: {}", e));
+                }
+            }
         }
         Ok(())
     }
