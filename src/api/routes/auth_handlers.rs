@@ -132,12 +132,21 @@ impl MessageRouter {
         location: Option<String>,
         profile_pic: Option<String>,
         cover_banner: Option<String>,
-        _response_sender: &mpsc::UnboundedSender<ServerMessage>,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            let _ = UserService::update_profile(
+            match UserService::update_profile(
                 user.id, bio, url1, url2, url3, location, profile_pic, cover_banner, &self.peer_map
-            ).await;
+            ).await {
+                Ok(_profile) => {
+                    self.send_success(response_sender, "Profile updated successfully!");
+                }
+                Err(e) => {
+                    self.send_error(response_sender, &format!("Failed to update profile: {}", e));
+                }
+            }
+        } else {
+            self.send_error(response_sender, "Must be logged in to update profile");
         }
         Ok(())
     }
