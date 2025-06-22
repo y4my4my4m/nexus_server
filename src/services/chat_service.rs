@@ -59,9 +59,128 @@ pub struct PaginationResponse<T> {
     pub total_count: Option<usize>, // Optional for performance
 }
 
+/// Trait for messages that have timestamps for pagination
+pub trait TimestampedMessage {
+    fn timestamp(&self) -> i64;
+}
+
+impl TimestampedMessage for ChannelMessage {
+    fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+}
+
+impl TimestampedMessage for DirectMessage {
+    fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
+}
+
 pub struct ChatService;
 
 impl ChatService {
+    /// Calculate pagination cursors based on messages and request direction
+    fn calculate_pagination_cursors<T: TimestampedMessage>(
+        messages: &[T],
+        has_more: bool,
+        direction: &PaginationDirection,
+    ) -> (Option<PaginationCursor>, Option<PaginationCursor>) {
+        let next_cursor = if has_more && !messages.is_empty() {
+            match direction {
+                PaginationDirection::Backward => {
+                    Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp()))
+                }
+                PaginationDirection::Forward => {
+                    Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp()))
+                }
+            }
+        } else {
+            None
+        };
+        
+        let prev_cursor = if !messages.is_empty() {
+            match direction {
+                PaginationDirection::Backward => {
+                    Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp()))
+                }
+                PaginationDirection::Forward => {
+                    Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp()))
+                }
+            }
+        } else {
+            None
+        };
+        
+        (next_cursor, prev_cursor)
+    }
+
+    /// Create pagination response for start cursor
+    fn create_start_pagination_response<T: TimestampedMessage>(
+        messages: Vec<T>,
+        has_more: bool,
+    ) -> PaginationResponse<T> {
+        let next_cursor = if has_more && !messages.is_empty() {
+            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp()))
+        } else {
+            None
+        };
+        
+        PaginationResponse {
+            items: messages,
+            has_more,
+            next_cursor,
+            prev_cursor: None,
+            total_count: None,
+        }
+    }
+
+    /// Create fallback pagination response for offset cursor
+    fn create_fallback_pagination_response<T>(
+        messages: Vec<T>,
+        has_more: bool,
+    ) -> PaginationResponse<T> {
+        PaginationResponse {
+            items: messages,
+            has_more,
+            next_cursor: None,
+            prev_cursor: None,
+            total_count: None,
+        }
+    }
+
+    /// Generic pagination handler for timestamp-based cursors
+    async fn handle_timestamp_pagination<T, F, Fut>(
+        request: &PaginationRequest,
+        limit: usize,
+        before_ts: Option<i64>,
+        db_fetch: F,
+    ) -> Result<PaginationResponse<T>>
+    where
+        T: TimestampedMessage,
+        F: FnOnce(Option<i64>, usize, bool) -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<(Vec<T>, bool), String>>,
+    {
+        let (messages, has_more) = db_fetch(
+            before_ts,
+            limit,
+            request.direction == PaginationDirection::Backward
+        ).await.map_err(|e| ServerError::Database(e))?;
+        
+        let (next_cursor, prev_cursor) = Self::calculate_pagination_cursors(
+            &messages, 
+            has_more, 
+            &request.direction
+        );
+        
+        Ok(PaginationResponse {
+            items: messages,
+            has_more,
+            next_cursor,
+            prev_cursor,
+            total_count: None,
+        })
+    }
+
     /// Send a channel message
     pub async fn send_channel_message(
         channel_id: Uuid,
@@ -157,46 +276,14 @@ impl ChatService {
         
         match request.cursor {
             PaginationCursor::Timestamp(before_ts) => {
-                let (messages, has_more) = channels::db_get_channel_messages_by_timestamp(
-                    channel_id, 
-                    Some(before_ts), 
+                Self::handle_timestamp_pagination(
+                    &request,
                     limit,
-                    request.direction == PaginationDirection::Backward
-                ).await.map_err(|e| ServerError::Database(e))?;
-                
-                let next_cursor = if has_more && !messages.is_empty() {
-                    match request.direction {
-                        PaginationDirection::Backward => {
-                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
-                        }
-                        PaginationDirection::Forward => {
-                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
-                        }
+                    Some(before_ts),
+                    |before, lim, reverse| async move {
+                        channels::db_get_channel_messages_by_timestamp(channel_id, before, lim, reverse).await
                     }
-                } else {
-                    None
-                };
-                
-                let prev_cursor = if !messages.is_empty() {
-                    match request.direction {
-                        PaginationDirection::Backward => {
-                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
-                        }
-                        PaginationDirection::Forward => {
-                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
-                        }
-                    }
-                } else {
-                    None
-                };
-                
-                Ok(PaginationResponse {
-                    items: messages,
-                    has_more,
-                    next_cursor,
-                    prev_cursor,
-                    total_count: None, // Could be expensive to calculate
-                })
+                ).await
             }
             PaginationCursor::Start => {
                 let (messages, has_more) = channels::db_get_channel_messages_by_timestamp(
@@ -206,30 +293,12 @@ impl ChatService {
                     request.direction == PaginationDirection::Backward
                 ).await.map_err(|e| ServerError::Database(e))?;
                 
-                let next_cursor = if has_more && !messages.is_empty() {
-                    Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
-                } else {
-                    None
-                };
-                
-                Ok(PaginationResponse {
-                    items: messages,
-                    has_more,
-                    next_cursor,
-                    prev_cursor: None,
-                    total_count: None,
-                })
+                Ok(Self::create_start_pagination_response(messages, has_more))
             }
             PaginationCursor::Offset(_) => {
                 // Fallback to existing implementation for compatibility
                 let (messages, has_more) = Self::get_channel_messages(channel_id, None, limit).await?;
-                Ok(PaginationResponse {
-                    items: messages,
-                    has_more,
-                    next_cursor: None,
-                    prev_cursor: None,
-                    total_count: None,
-                })
+                Ok(Self::create_fallback_pagination_response(messages, has_more))
             }
         }
     }
@@ -246,47 +315,14 @@ impl ChatService {
         
         match request.cursor {
             PaginationCursor::Timestamp(before_ts) => {
-                let (messages, has_more) = messages::db_get_direct_messages_by_timestamp(
-                    user1_id, 
-                    user2_id, 
-                    Some(before_ts), 
+                Self::handle_timestamp_pagination(
+                    &request,
                     limit,
-                    request.direction == PaginationDirection::Backward
-                ).await.map_err(|e| ServerError::Database(e))?;
-                
-                let next_cursor = if has_more && !messages.is_empty() {
-                    match request.direction {
-                        PaginationDirection::Backward => {
-                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
-                        }
-                        PaginationDirection::Forward => {
-                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
-                        }
+                    Some(before_ts),
+                    |before, lim, reverse| async move {
+                        messages::db_get_direct_messages_by_timestamp(user1_id, user2_id, before, lim, reverse).await
                     }
-                } else {
-                    None
-                };
-                
-                let prev_cursor = if !messages.is_empty() {
-                    match request.direction {
-                        PaginationDirection::Backward => {
-                            Some(PaginationCursor::Timestamp(messages.last().unwrap().timestamp))
-                        }
-                        PaginationDirection::Forward => {
-                            Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
-                        }
-                    }
-                } else {
-                    None
-                };
-                
-                Ok(PaginationResponse {
-                    items: messages,
-                    has_more,
-                    next_cursor,
-                    prev_cursor,
-                    total_count: None,
-                })
+                ).await
             }
             PaginationCursor::Start => {
                 let (messages, has_more) = messages::db_get_direct_messages_by_timestamp(
@@ -297,30 +333,12 @@ impl ChatService {
                     request.direction == PaginationDirection::Backward
                 ).await.map_err(|e| ServerError::Database(e))?;
                 
-                let next_cursor = if has_more && !messages.is_empty() {
-                    Some(PaginationCursor::Timestamp(messages.first().unwrap().timestamp))
-                } else {
-                    None
-                };
-                
-                Ok(PaginationResponse {
-                    items: messages,
-                    has_more,
-                    next_cursor,
-                    prev_cursor: None,
-                    total_count: None,
-                })
+                Ok(Self::create_start_pagination_response(messages, has_more))
             }
             PaginationCursor::Offset(_) => {
                 // Fallback to existing implementation
                 let (messages, has_more) = Self::get_direct_messages(user1_id, user2_id, None, limit).await?;
-                Ok(PaginationResponse {
-                    items: messages,
-                    has_more,
-                    next_cursor: None,
-                    prev_cursor: None,
-                    total_count: None,
-                })
+                Ok(Self::create_fallback_pagination_response(messages, has_more))
             }
         }
     }
