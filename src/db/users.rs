@@ -42,7 +42,7 @@ pub async fn db_get_user_info_by_id(user_id: Uuid) -> Result<UserInfo, String> {
                     "Moderator" => UserRole::Moderator,
                     _ => UserRole::User,
                 },
-                status: UserStatus::Connected,
+                status: UserStatus::Offline,
             })
         }).map_err(|_| "User not found".to_string())?;
 

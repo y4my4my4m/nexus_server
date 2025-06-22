@@ -184,7 +184,8 @@ pub async fn db_get_channel_user_list_lightweight(channel_id: Uuid) -> Result<Ve
             "SELECT u.id, u.username, u.color, u.role 
              FROM users u 
              JOIN channel_users cu ON u.id = cu.user_id 
-             WHERE cu.channel_id = ?1"
+             WHERE cu.channel_id = ?1 
+             ORDER BY u.username"
         ).map_err(|e| e.to_string())?;
 
         let user_rows = stmt.query_map(params![channel_id_str], |row| {
