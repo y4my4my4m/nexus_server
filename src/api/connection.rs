@@ -91,7 +91,7 @@ where
                         Some(Ok(msg)) => {
                             match bincode::deserialize::<ClientMessage>(&msg) {
                                 Ok(message) => {
-                                    tracing::info!("Parsed ClientMessage: {:?}", message);
+                                    // tracing::info!("Parsed ClientMessage: {:?}", message);
                                     
                                     // Use the router to handle the message
                                     if let Err(e) = router.handle_message(
