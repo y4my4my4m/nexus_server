@@ -220,7 +220,7 @@ fn create_tables(conn: &Connection) -> SqlResult<()> {
 
 fn add_missing_columns(conn: &Connection) -> SqlResult<()> {
     // Add any missing columns for backward compatibility
-    let columns = [
+    let user_columns = [
         ("bio", "TEXT"),
         ("url1", "TEXT"),
         ("url2", "TEXT"),
@@ -230,7 +230,7 @@ fn add_missing_columns(conn: &Connection) -> SqlResult<()> {
         ("cover_banner", "TEXT"),
     ];
 
-    for (col, col_type) in columns.iter() {
+    for (col, col_type) in user_columns.iter() {
         let sql = format!("ALTER TABLE users ADD COLUMN {} {}", col, col_type);
         let result = conn.execute(&sql, []);
         
@@ -242,12 +242,23 @@ fn add_missing_columns(conn: &Connection) -> SqlResult<()> {
         }
     }
 
+    // Add reply_to column to posts table for post replies feature
+    let sql = "ALTER TABLE posts ADD COLUMN reply_to TEXT";
+    let result = conn.execute(sql, []);
+    if let Err(e) = result {
+        // Ignore duplicate column errors
+        if !e.to_string().contains("duplicate column name") {
+            return Err(e);
+        }
+    }
+
     // Create indexes for better performance
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_timestamp ON channel_messages(channel_id, timestamp)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_direct_messages_users_timestamp ON direct_messages(from_user_id, to_user_id, timestamp)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_server_users_server ON server_users(server_id)", []);
     let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_users_channel ON channel_users(channel_id)", []);
+    let _ = conn.execute("CREATE INDEX IF NOT EXISTS idx_posts_reply_to ON posts(reply_to)", []); // Index for reply lookups
 
     info!("Database migration completed");
     Ok(())

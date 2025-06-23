@@ -113,7 +113,7 @@ impl MessageRouter {
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            match db::forums::db_create_post(thread_id, user.id, &content).await {
+            match db::forums::db_create_post(thread_id, user.id, &content, None).await {
                 Ok(_) => {
                     self.send_success(response_sender, "Post created successfully");
                     
@@ -127,6 +127,34 @@ impl MessageRouter {
             }
         } else {
             self.send_error(response_sender, "Must be logged in to create posts");
+        }
+        Ok(())
+    }
+
+    /// Handle create post reply
+    pub async fn handle_create_post_reply(
+        &self,
+        current_user: &Option<User>,
+        thread_id: Uuid,
+        content: String,
+        reply_to: Uuid,
+        response_sender: &mpsc::UnboundedSender<ServerMessage>,
+    ) -> crate::errors::Result<()> {
+        if let Some(user) = current_user {
+            match db::forums::db_create_post(thread_id, user.id, &content, Some(reply_to)).await {
+                Ok(_) => {
+                    self.send_success(response_sender, "Reply created successfully");
+                    
+                    // Refresh forums to show new reply
+                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
+                    self.send_response(response_sender, ServerMessage::Forums(forums));
+                }
+                Err(e) => {
+                    self.send_error(response_sender, &format!("Failed to create reply: {}", e));
+                }
+            }
+        } else {
+            self.send_error(response_sender, "Must be logged in to create replies");
         }
         Ok(())
     }

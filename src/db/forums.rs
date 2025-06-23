@@ -76,7 +76,7 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
 
                 // Get posts for this thread
                 let mut post_stmt = conn.prepare(
-                    "SELECT id, author_id, content, timestamp FROM posts WHERE thread_id = ?1"
+                    "SELECT id, author_id, content, timestamp, reply_to FROM posts WHERE thread_id = ?1"
                 ).map_err(|e| e.to_string())?;
                 let post_rows = post_stmt.query_map(params![thread_id], |row| {
                     Ok((
@@ -84,12 +84,19 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 }).map_err(|e| e.to_string())?;
 
                 let mut posts = Vec::new();
                 for post_row in post_rows {
-                    let (post_id, post_author_id, content, post_timestamp) = post_row.map_err(|e| e.to_string())?;
+                    let (post_id, post_author_id, content, post_timestamp, reply_to_str) = post_row.map_err(|e| e.to_string())?;
+
+                    // Parse reply_to UUID if present
+                    let reply_to = match reply_to_str {
+                        Some(ref s) => Uuid::parse_str(s).ok(),
+                        None => None,
+                    };
 
                     // Get post author
                     let mut post_user_stmt = conn.prepare(
@@ -127,6 +134,7 @@ pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
                         author: post_author,
                         content,
                         timestamp: post_timestamp,
+                        reply_to,
                     });
                 }
 
@@ -188,10 +196,11 @@ pub async fn db_create_thread(
     .unwrap()
 }
 
-pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> Result<(), String> {
+pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str, reply_to: Option<Uuid>) -> Result<(), String> {
     let thread_id_str = thread_id.to_string();
     let author_id_str = author_id.to_string();
     let content = content.to_string();
+    let reply_to_str = reply_to.map(|id| id.to_string());
     let now = chrono::Utc::now().timestamp();
 
     task::spawn_blocking(move || {
@@ -199,8 +208,8 @@ pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str) -> 
         let post_id = Uuid::new_v4();
 
         conn.execute(
-            "INSERT INTO posts (id, thread_id, author_id, content, timestamp) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![post_id.to_string(), thread_id_str, author_id_str, content, now],
+            "INSERT INTO posts (id, thread_id, author_id, content, timestamp, reply_to) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![post_id.to_string(), thread_id_str, author_id_str, content, now, reply_to_str],
         ).map_err(|e| e.to_string())?;
 
         Ok(())

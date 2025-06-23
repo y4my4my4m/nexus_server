@@ -109,6 +109,9 @@ impl MessageRouter {
             ClientMessage::CreatePost { thread_id, content } => {
                 self.handle_create_post(current_user, thread_id, content, response_sender).await
             }
+            ClientMessage::CreatePostReply { thread_id, content, reply_to } => {
+                self.handle_create_post_reply(current_user, thread_id, content, reply_to, response_sender).await
+            }
             ClientMessage::DeletePost(post_id) => {
                 self.handle_delete_post(current_user, post_id, response_sender).await
             }
