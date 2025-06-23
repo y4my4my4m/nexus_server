@@ -179,5 +179,3 @@ mod forum_handlers;
 mod invite_handlers;
 mod notification_handlers;
 mod cache_handlers;
-
-// Re-export handler implementations

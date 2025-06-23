@@ -122,7 +122,7 @@ where
                     }
                 }
                 Some(msg) = rx.recv() => {
-                    tracing::info!("Sending ServerMessage: {:?}", msg);
+                    // tracing::debug!("Sending ServerMessage: {:?}", msg);
                     if let Err(e) = sink.send(bincode::serialize(&msg).unwrap().into()).await {
                         error!("Error sending message: {:?}", e);
                         
