@@ -83,11 +83,10 @@ pub async fn db_get_channel_messages(
         // Use separate if/else blocks to avoid type conflicts
         if let Some(before_ts) = before {
             let mut stmt = conn.prepare(
-                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
-                 FROM channel_messages cm
-                 INNER JOIN users u ON cm.sent_by = u.id
-                 WHERE cm.channel_id = ? AND cm.timestamp < ?
-                 ORDER BY cm.timestamp DESC LIMIT 50"
+                "SELECT id, sent_by, timestamp, content
+                 FROM channel_messages
+                 WHERE channel_id = ? AND timestamp < ?
+                 ORDER BY timestamp DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
             let rows = stmt.query_map(params![channel_id_str, before_ts], |row| {
@@ -96,14 +95,11 @@ pub async fn db_get_channel_messages(
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
             for row in rows {
-                let (id, sent_by, timestamp, content, username, color, profile_pic) = row.map_err(|e| e.to_string())?;
+                let (id, sent_by, timestamp, content) = row.map_err(|e| e.to_string())?;
                 
                 messages.push(ChannelMessage {
                     id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
@@ -111,18 +107,14 @@ pub async fn db_get_channel_messages(
                     sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
                     timestamp,
                     content,
-                    author_username: username,
-                    author_color: parse_user_color(&color),
-                    author_profile_pic: profile_pic,
                 });
             }
         } else {
             let mut stmt = conn.prepare(
-                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
-                 FROM channel_messages cm
-                 INNER JOIN users u ON cm.sent_by = u.id
-                 WHERE cm.channel_id = ?
-                 ORDER BY cm.timestamp DESC LIMIT 50"
+                "SELECT id, sent_by, timestamp, content
+                 FROM channel_messages
+                 WHERE channel_id = ?
+                 ORDER BY timestamp DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
             let rows = stmt.query_map(params![channel_id_str], |row| {
@@ -131,14 +123,11 @@ pub async fn db_get_channel_messages(
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
             for row in rows {
-                let (id, sent_by, timestamp, content, username, color, profile_pic) = row.map_err(|e| e.to_string())?;
+                let (id, sent_by, timestamp, content) = row.map_err(|e| e.to_string())?;
                 
                 messages.push(ChannelMessage {
                     id: Uuid::parse_str(&id).map_err(|e| e.to_string())?,
@@ -146,9 +135,6 @@ pub async fn db_get_channel_messages(
                     sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
                     timestamp,
                     content,
-                    author_username: username,
-                    author_color: parse_user_color(&color),
-                    author_profile_pic: profile_pic,
                 });
             }
         }
@@ -274,11 +260,10 @@ pub async fn db_get_channel_messages_by_timestamp(
             let order = if reverse_order { "DESC" } else { "ASC" };
             
             let query = format!(
-                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
-                 FROM channel_messages cm
-                 JOIN users u ON cm.sent_by = u.id
-                 WHERE cm.channel_id = ? AND cm.timestamp {} ?
-                 ORDER BY cm.timestamp {} LIMIT ?",
+                "SELECT id, sent_by, timestamp, content
+                 FROM channel_messages
+                 WHERE channel_id = ? AND timestamp {} ?
+                 ORDER BY timestamp {} LIMIT ?",
                 comparison, order
             );
             
@@ -289,14 +274,11 @@ pub async fn db_get_channel_messages_by_timestamp(
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
             for row in rows {
-                let (id, sent_by, timestamp, content, username, color, profile_pic) = 
+                let (id, sent_by, timestamp, content) = 
                     row.map_err(|e| e.to_string())?;
                 
                 messages.push(ChannelMessage {
@@ -305,20 +287,16 @@ pub async fn db_get_channel_messages_by_timestamp(
                     sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
                     timestamp,
                     content,
-                    author_username: username,
-                    author_color: crate::util::parse_user_color(&color),
-                    author_profile_pic: profile_pic,
                 });
             }
         } else {
             let order = if reverse_order { "DESC" } else { "ASC" };
             
             let query = format!(
-                "SELECT cm.id, cm.sent_by, cm.timestamp, cm.content, u.username, u.color, u.profile_pic
-                 FROM channel_messages cm
-                 JOIN users u ON cm.sent_by = u.id
-                 WHERE cm.channel_id = ?
-                 ORDER BY cm.timestamp {} LIMIT ?",
+                "SELECT id, sent_by, timestamp, content
+                 FROM channel_messages
+                 WHERE channel_id = ?
+                 ORDER BY timestamp {} LIMIT ?",
                 order
             );
             
@@ -329,14 +307,11 @@ pub async fn db_get_channel_messages_by_timestamp(
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
             for row in rows {
-                let (id, sent_by, timestamp, content, username, color, profile_pic) = 
+                let (id, sent_by, timestamp, content) = 
                     row.map_err(|e| e.to_string())?;
                 
                 messages.push(ChannelMessage {
@@ -345,9 +320,6 @@ pub async fn db_get_channel_messages_by_timestamp(
                     sent_by: Uuid::parse_str(&sent_by).map_err(|e| e.to_string())?,
                     timestamp,
                     content,
-                    author_username: username,
-                    author_color: crate::util::parse_user_color(&color),
-                    author_profile_pic: profile_pic,
                 });
             }
         }

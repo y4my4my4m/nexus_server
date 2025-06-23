@@ -1,4 +1,3 @@
-use crate::util::parse_user_color;
 use common::{DirectMessage, User, UserInfo, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
@@ -37,41 +36,35 @@ pub async fn db_get_direct_messages(
     before: Option<i64>,
     _limit: usize,
 ) -> Result<(Vec<DirectMessage>, bool), String> {
-    let user1_str = user1_id.to_string();
-    let user2_str = user2_id.to_string();
+    let user1_id_str = user1_id.to_string();
+    let user2_id_str = user2_id.to_string();
 
     task::spawn_blocking(move || {
         let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
         
         let mut messages: Vec<DirectMessage> = Vec::new();
         
-        // Use separate functions to avoid type conflicts
         if let Some(before_ts) = before {
-            // Query with timestamp filter
             let mut stmt = conn.prepare(
-                "SELECT dm.id, dm.from_user_id, dm.to_user_id, dm.content, dm.timestamp, u.username, u.color, u.profile_pic
-                 FROM direct_messages dm
-                 INNER JOIN users u ON dm.from_user_id = u.id
-                 WHERE ((dm.from_user_id = ? AND dm.to_user_id = ?) OR (dm.from_user_id = ? AND dm.to_user_id = ?))
-                 AND dm.timestamp < ?
-                 ORDER BY dm.timestamp DESC LIMIT 50"
+                "SELECT id, from_user_id, to_user_id, content, timestamp
+                 FROM direct_messages 
+                 WHERE ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)) 
+                 AND timestamp < ?
+                 ORDER BY timestamp DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
-            let rows = stmt.query_map(params![user1_str, user2_str, user2_str, user1_str, before_ts], |row| {
+            let rows = stmt.query_map(params![user1_id_str, user2_id_str, user2_id_str, user1_id_str, before_ts], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<String>>(7)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
             for row in rows {
-                let (id, from_user_id, to_user_id, content, timestamp, username, color, profile_pic) = 
+                let (id, from_user_id, to_user_id, content, timestamp) = 
                     row.map_err(|e| e.to_string())?;
                 
                 messages.push(DirectMessage {
@@ -80,36 +73,28 @@ pub async fn db_get_direct_messages(
                     to: Uuid::parse_str(&to_user_id).map_err(|e| e.to_string())?,
                     timestamp,
                     content,
-                    author_username: username,
-                    author_color: parse_user_color(&color),
-                    author_profile_pic: profile_pic,
                 });
             }
         } else {
-            // Query without timestamp filter
             let mut stmt = conn.prepare(
-                "SELECT dm.id, dm.from_user_id, dm.to_user_id, dm.content, dm.timestamp, u.username, u.color, u.profile_pic
-                 FROM direct_messages dm
-                 INNER JOIN users u ON dm.from_user_id = u.id
-                 WHERE (dm.from_user_id = ? AND dm.to_user_id = ?) OR (dm.from_user_id = ? AND dm.to_user_id = ?)
-                 ORDER BY dm.timestamp DESC LIMIT 50"
+                "SELECT id, from_user_id, to_user_id, content, timestamp
+                 FROM direct_messages 
+                 WHERE ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))
+                 ORDER BY timestamp DESC LIMIT 50"
             ).map_err(|e| e.to_string())?;
             
-            let rows = stmt.query_map(params![user1_str, user2_str, user2_str, user1_str], |row| {
+            let rows = stmt.query_map(params![user1_id_str, user2_id_str, user2_id_str, user1_id_str], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, String>(6)?,
-                    row.get::<_, Option<String>>(7)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
             for row in rows {
-                let (id, from_user_id, to_user_id, content, timestamp, username, color, profile_pic) = 
+                let (id, from_user_id, to_user_id, content, timestamp) = 
                     row.map_err(|e| e.to_string())?;
                 
                 messages.push(DirectMessage {
@@ -118,9 +103,6 @@ pub async fn db_get_direct_messages(
                     to: Uuid::parse_str(&to_user_id).map_err(|e| e.to_string())?,
                     timestamp,
                     content,
-                    author_username: username,
-                    author_color: parse_user_color(&color),
-                    author_profile_pic: profile_pic,
                 });
             }
         }
@@ -134,7 +116,7 @@ pub async fn db_get_direct_messages(
                 "SELECT MIN(timestamp) FROM direct_messages 
                  WHERE (from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?)"
             ).map_err(|e| e.to_string())?;
-            let min_ts: i64 = min_stmt.query_row(params![user1_str, user2_str, user2_str, user1_str], |row| row.get(0))
+            let min_ts: i64 = min_stmt.query_row(params![user1_id_str, user2_id_str, user2_id_str, user1_id_str], |row| row.get(0))
                 .unwrap_or(oldest_ts);
             oldest_ts <= min_ts
         } else {
@@ -192,7 +174,7 @@ pub async fn db_get_dm_user_list_lightweight(user_id: Uuid) -> Result<Vec<UserIn
                 users.push(UserInfo {
                     id: other_user_id,
                     username,
-                    color: crate::util::parse_user_color(&color),
+                    color: common::UserColor::new(color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
@@ -255,7 +237,7 @@ pub async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
                 users.push(User {
                     id: other_user_id,
                     username,
-                    color: crate::util::parse_user_color(&color),
+                    color: common::UserColor::new(color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
@@ -291,36 +273,30 @@ pub async fn db_get_direct_messages_by_timestamp(
         let mut messages = Vec::new();
         
         let base_query = 
-            "SELECT dm.id, dm.from_user_id, dm.to_user_id, dm.timestamp, dm.content, 
-                    u.username, u.color, u.profile_pic
-             FROM direct_messages dm
-             JOIN users u ON dm.from_user_id = u.id
-             WHERE ((dm.from_user_id = ? AND dm.to_user_id = ?) OR 
-                    (dm.from_user_id = ? AND dm.to_user_id = ?))";
+            "SELECT id, from_user_id, to_user_id, timestamp, content
+             FROM direct_messages
+             WHERE ((from_user_id = ? AND to_user_id = ?) OR 
+                    (from_user_id = ? AND to_user_id = ?))";
         
         let query = if let Some(_before_ts) = before {
             let comparison = if reverse_order { ">=" } else { "<" };
             let order = if reverse_order { "DESC" } else { "ASC" };
-            format!("{} AND dm.timestamp {} ? ORDER BY dm.timestamp {} LIMIT ?", 
+            format!("{} AND timestamp {} ? ORDER BY timestamp {} LIMIT ?", 
                     base_query, comparison, order)
         } else {
             let order = if reverse_order { "DESC" } else { "ASC" };
-            format!("{} ORDER BY dm.timestamp {} LIMIT ?", base_query, order)
+            format!("{} ORDER BY timestamp {} LIMIT ?", base_query, order)
         };
         
         let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
         
-        // Use the same parameter binding for both cases
-        let row_mapper = |row: &rusqlite::Row| -> rusqlite::Result<(String, String, String, i64, String, String, String, Option<String>)> {
+        let row_mapper = |row: &rusqlite::Row| -> rusqlite::Result<(String, String, String, i64, String)> {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, Option<String>>(7)?,
             ))
         };
         
@@ -331,7 +307,7 @@ pub async fn db_get_direct_messages_by_timestamp(
         }.map_err(|e| e.to_string())?;
 
         for row in rows {
-            let (id, from_user_id, to_user_id, timestamp, content, username, color, profile_pic) = 
+            let (id, from_user_id, to_user_id, timestamp, content) = 
                 row.map_err(|e| e.to_string())?;
             
             messages.push(DirectMessage {
@@ -340,9 +316,6 @@ pub async fn db_get_direct_messages_by_timestamp(
                 to: Uuid::parse_str(&to_user_id).map_err(|e| e.to_string())?,
                 timestamp,
                 content,
-                author_username: username,
-                author_color: crate::util::parse_user_color(&color),
-                author_profile_pic: profile_pic,
             });
         }
 

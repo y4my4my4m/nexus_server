@@ -195,22 +195,18 @@ impl ChatService {
             channel_id, user.id, timestamp, content
         ).await.map_err(|e| ServerError::Database(e))?;
 
-        // Create message object
+        // Create message object - no redundant author fields
         let channel_msg = ChannelMessage {
             id: message_id,
             channel_id,
             sent_by: user.id,
             timestamp,
             content: content.to_string(),
-            author_username: user.username.clone(),
-            author_color: user.color.clone(),
-            author_profile_pic: user.profile_pic.clone(),
         };
 
         // Get channel users for broadcasting
         let channel_users = channels::db_get_channel_user_list(channel_id).await
             .map_err(|e| ServerError::Database(e))?;
-        
         let user_ids: Vec<Uuid> = channel_users.iter().map(|u| u.id).collect();
 
         // Broadcast to channel users
@@ -241,16 +237,13 @@ impl ChatService {
             from_user.id, to_user_id, content, timestamp
         ).await.map_err(|e| ServerError::Database(e))?;
 
-        // Create DM object
+        // Create DM object - no redundant author fields
         let dm = DirectMessage {
             id: dm_id,
             from: from_user.id,
             to: to_user_id,
             timestamp,
             content: content.to_string(),
-            author_username: from_user.username.clone(),
-            author_color: from_user.color.clone(),
-            author_profile_pic: from_user.profile_pic.clone(),
         };
 
         // Send to both users

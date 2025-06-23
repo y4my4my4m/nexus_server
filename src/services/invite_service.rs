@@ -66,16 +66,13 @@ impl InviteService {
                         from_user_id, to_user_id, &invite_content, timestamp
                     ).await.map_err(|e| ServerError::Database(e))?;
 
-                    // Create DM object
+                    // Create DM object - no redundant author fields
                     let dm = DirectMessage {
                         id: dm_id,
                         from: from_user_id,
                         to: to_user_id,
                         timestamp,
                         content: invite_content,
-                        author_username: from_user.username.clone(),
-                        author_color: from_user.color,
-                        author_profile_pic: from_user.profile_pic.clone(),
                     };
 
                     // Send the DM to both users
