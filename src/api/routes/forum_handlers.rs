@@ -143,7 +143,21 @@ impl MessageRouter {
         if let Some(user) = current_user {
             match db::forums::db_create_post(thread_id, user.id, &content, Some(reply_to)).await {
                 Ok(_) => {
-                    self.send_success(response_sender, "Reply created successfully");
+                    // Don't send a success notification - it's annoying and useless
+                    
+                    // Create notification for the original post author if it's not a self-reply
+                    if let Ok(original_post_author_id) = db::forums::db_get_post_author(reply_to).await {
+                        if original_post_author_id != user.id {
+                            // Create thread reply notification with the user's profile picture
+                            crate::services::NotificationService::create_thread_reply_notification(
+                                original_post_author_id,
+                                thread_id,
+                                &user.username,
+                                user.profile_pic.as_deref(),
+                                &self.peer_map,
+                            ).await;
+                        }
+                    }
                     
                     // Refresh forums to show new reply
                     let forums = db::forums::db_get_forums().await.unwrap_or_default();

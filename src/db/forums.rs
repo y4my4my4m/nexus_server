@@ -356,3 +356,20 @@ pub async fn db_delete_forum(forum_id: Uuid) -> Result<(), String> {
     .await
     .unwrap()
 }
+
+pub async fn db_get_post_author(post_id: Uuid) -> Result<Uuid, String> {
+    let post_id_str = post_id.to_string();
+    
+    task::spawn_blocking(move || {
+        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        
+        let mut stmt = conn.prepare("SELECT author_id FROM posts WHERE id = ?1").map_err(|e| e.to_string())?;
+        let author_id_str: String = stmt.query_row(params![post_id_str], |row| {
+            row.get(0)
+        }).map_err(|_| "Post not found".to_string())?;
+        
+        Uuid::parse_str(&author_id_str).map_err(|e| e.to_string())
+    })
+    .await
+    .unwrap()
+}
