@@ -5,13 +5,13 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 impl MessageRouter {
-    /// Handle get forums
+    /// Handle get forums - use lightweight version by default for better performance
     pub async fn handle_get_forums(
         &self,
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
-        let forums = db::forums::db_get_forums().await.unwrap_or_default();
-        self.send_response(response_sender, ServerMessage::Forums(forums));
+        let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+        self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
         Ok(())
     }
 
@@ -29,9 +29,9 @@ impl MessageRouter {
                     Ok(_) => {
                         self.send_success(response_sender, "Forum created successfully");
                         
-                        // Refresh forums to show new forum
-                        let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                        self.send_response(response_sender, ServerMessage::Forums(forums));
+                        // Refresh forums to show new forum - use lightweight version
+                        let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                        self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                     }
                     Err(e) => {
                         self.send_error(response_sender, &format!("Failed to create forum: {}", e));
@@ -59,9 +59,9 @@ impl MessageRouter {
                     Ok(_) => {
                         self.send_success(response_sender, "Forum deleted successfully");
                         
-                        // Refresh forums to show updated list
-                        let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                        self.send_response(response_sender, ServerMessage::Forums(forums));
+                        // Refresh forums to show updated list - use lightweight version
+                        let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                        self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                     }
                     Err(e) => {
                         self.send_error(response_sender, &format!("Failed to delete forum: {}", e));
@@ -90,9 +90,9 @@ impl MessageRouter {
                 Ok(_) => {
                     self.send_success(response_sender, "Thread created successfully");
                     
-                    // Refresh forums to show new thread
-                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                    self.send_response(response_sender, ServerMessage::Forums(forums));
+                    // Refresh forums to show new thread - use lightweight version
+                    let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                    self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                 }
                 Err(e) => {
                     self.send_error(response_sender, &format!("Failed to create thread: {}", e));
@@ -117,9 +117,9 @@ impl MessageRouter {
                 Ok(_) => {
                     self.send_success(response_sender, "Post created successfully");
                     
-                    // Refresh forums to show new post
-                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                    self.send_response(response_sender, ServerMessage::Forums(forums));
+                    // Refresh forums to show new post - use lightweight version
+                    let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                    self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                 }
                 Err(e) => {
                     self.send_error(response_sender, &format!("Failed to create post: {}", e));
@@ -159,9 +159,9 @@ impl MessageRouter {
                         }
                     }
                     
-                    // Refresh forums to show new reply
-                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                    self.send_response(response_sender, ServerMessage::Forums(forums));
+                    // Refresh forums to show new reply - use lightweight version
+                    let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                    self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                 }
                 Err(e) => {
                     self.send_error(response_sender, &format!("Failed to create reply: {}", e));
@@ -185,9 +185,9 @@ impl MessageRouter {
                 Ok(_) => {
                     self.send_success(response_sender, "Post deleted successfully");
                     
-                    // Refresh forums to show updated state
-                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                    self.send_response(response_sender, ServerMessage::Forums(forums));
+                    // Refresh forums to show updated state - use lightweight version
+                    let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                    self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                 }
                 Err(e) => {
                     self.send_error(response_sender, &format!("Failed to delete post: {}", e));
@@ -211,9 +211,9 @@ impl MessageRouter {
                 Ok(_) => {
                     self.send_success(response_sender, "Thread deleted successfully");
                     
-                    // Refresh forums to show updated state
-                    let forums = db::forums::db_get_forums().await.unwrap_or_default();
-                    self.send_response(response_sender, ServerMessage::Forums(forums));
+                    // Refresh forums to show updated state - use lightweight version
+                    let forums = db::forums::db_get_forums_lightweight().await.unwrap_or_default();
+                    self.send_response(response_sender, ServerMessage::ForumsLightweight(forums));
                 }
                 Err(e) => {
                     self.send_error(response_sender, &format!("Failed to delete thread: {}", e));
