@@ -6,6 +6,7 @@ mod services;
 mod errors;
 
 use api::connection::{handle_connection, PeerMap};
+use db::db_config;
 use db::migrations::init_db;
 use db::servers::ensure_default_server_exists;
 use std::collections::HashMap;
@@ -13,16 +14,26 @@ use std::env;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
+use common::config::ServerConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt::init();
     
+    // Load server configuration
+    let config_path = env::args().nth(2).unwrap_or_else(|| "server_config.toml".to_string());
+    let config = ServerConfig::load_or_default(&config_path);
+    info!("Loaded configuration from {}", config_path);
+    
+    // Initialize global database path from configuration
+    db_config::init_db_path(config.database.path.clone());
+    info!("Database path set to: {}", config.database.path);
+    
     // Get server address
     let addr = env::args()
         .nth(1)
-        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+        .unwrap_or_else(|| format!("{}:{}", config.network.bind_address, config.network.port));
     
     // Initialize the database
     match init_db().await {
@@ -45,22 +56,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Initialize peer map for connection management
     let peer_map = PeerMap::new(Mutex::new(HashMap::new()));
-    
-    // Main server loop
+
+    // Accept connections
     loop {
-        match listener.accept().await {
-            Ok((stream, addr)) => {
-                info!("New connection from: {}", addr);
-                let peer_map_clone = peer_map.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, peer_map_clone).await {
-                        error!("Connection error: {}", e);
-                    }
-                });
+        let (stream, _) = listener.accept().await?;
+        let peer_map = peer_map.clone();
+        
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(stream, peer_map).await {
+                error!("Connection error: {}", e);
             }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
-            }
-        }
+        });
     }
 }

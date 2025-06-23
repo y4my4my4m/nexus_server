@@ -1,15 +1,14 @@
+use crate::db::db_config;
 use crate::util::parse_user_color;
 use common::{Forum, Thread, Post, User, UserRole, UserStatus, UserInfo, ForumLightweight, ThreadLightweight, PostLightweight};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
 
-const DB_PATH: &str = "cyberpunk_bbs.db";
-
 /// Get forums with lightweight user info (no profile images) for better performance
 pub async fn db_get_forums_lightweight() -> Result<Vec<ForumLightweight>, String> {
     task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let mut forums = Vec::new();
 
         let mut stmt = conn.prepare("SELECT id, name, description FROM forums")
@@ -156,7 +155,7 @@ pub async fn db_get_forums_lightweight() -> Result<Vec<ForumLightweight>, String
 
 pub async fn db_get_forums() -> Result<Vec<Forum>, String> {
     task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let mut forums = Vec::new();
 
         let mut stmt = conn.prepare("SELECT id, name, description FROM forums")
@@ -322,7 +321,7 @@ pub async fn db_create_thread(
     let now = chrono::Utc::now().timestamp();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let thread_id = Uuid::new_v4();
         let post_id = Uuid::new_v4();
 
@@ -352,7 +351,7 @@ pub async fn db_create_post(thread_id: Uuid, author_id: Uuid, content: &str, rep
     let now = chrono::Utc::now().timestamp();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let post_id = Uuid::new_v4();
 
         conn.execute(
@@ -371,7 +370,7 @@ pub async fn db_create_forum(name: &str, description: &str) -> Result<(), String
     let description = description.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let forum_id = Uuid::new_v4();
 
         conn.execute(
@@ -390,7 +389,7 @@ pub async fn db_delete_post(post_id: Uuid, user_id: Uuid) -> Result<(), String> 
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         // Check if the user owns the post or is an admin/moderator
         let mut stmt = conn.prepare(
@@ -432,7 +431,7 @@ pub async fn db_delete_thread(thread_id: Uuid, user_id: Uuid) -> Result<(), Stri
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         // Check if the user owns the thread or is an admin/moderator
         let mut stmt = conn.prepare(
@@ -479,7 +478,7 @@ pub async fn db_delete_forum(forum_id: Uuid) -> Result<(), String> {
     let forum_id_str = forum_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         // Delete all posts in threads of this forum first
         conn.execute(
@@ -509,7 +508,7 @@ pub async fn db_get_post_author(post_id: Uuid) -> Result<Uuid, String> {
     let post_id_str = post_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare("SELECT author_id FROM posts WHERE id = ?1").map_err(|e| e.to_string())?;
         let author_id_str: String = stmt.query_row(params![post_id_str], |row| {

@@ -1,12 +1,11 @@
 // Channel DB functions
 
+use crate::db::db_config;
 use crate::util::parse_user_color;
 use common::{ChannelMessage, User, UserRole, UserStatus, UserInfo};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
-
-const DB_PATH: &str = "cyberpunk_bbs.db";
 
 pub async fn db_create_channel(
     server_id: Uuid,
@@ -17,7 +16,7 @@ pub async fn db_create_channel(
     let name = name.to_string();
     let description = description.to_string();
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO channels (id, server_id, name, description) VALUES (?1, ?2, ?3, ?4)",
@@ -56,7 +55,7 @@ pub async fn db_create_channel_message(
     let sent_by = sent_by.to_string();
     let content = content.to_string();
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO channel_messages (id, channel_id, sent_by, timestamp, content) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -76,7 +75,7 @@ pub async fn db_get_channel_messages(
     let channel_id_str = channel_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut messages: Vec<ChannelMessage> = Vec::new();
         
@@ -164,7 +163,7 @@ pub async fn db_get_channel_user_list_lightweight(channel_id: Uuid) -> Result<Ve
     let channel_id_str = channel_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.color, u.role 
@@ -204,7 +203,7 @@ pub async fn db_get_channel_user_list(channel_id: Uuid) -> Result<Vec<User>, Str
     let channel_id_str = channel_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.color, u.role, u.profile_pic, u.cover_banner 
@@ -252,7 +251,7 @@ pub async fn db_get_channel_messages_by_timestamp(
     let limit = limit.min(200); // Safety limit
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let mut messages = Vec::new();
         
         if let Some(before_ts) = before {
@@ -345,7 +344,7 @@ pub async fn db_get_channel_message_count(channel_id: Uuid) -> Result<usize, Str
     let channel_id_str = channel_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
             "SELECT COUNT(*) FROM channel_messages WHERE channel_id = ?"
@@ -365,7 +364,7 @@ pub async fn db_get_server_channels(server_id: Uuid) -> Result<Vec<Uuid>, String
     let server_id_str = server_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
             "SELECT id FROM channels WHERE server_id = ?"
@@ -393,7 +392,7 @@ pub async fn db_add_user_to_channel(channel_id: Uuid, user_id: Uuid) -> Result<(
     let user_id_str = user_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         conn.execute(
             "INSERT OR IGNORE INTO channel_users (channel_id, user_id) VALUES (?1, ?2)",
@@ -411,7 +410,7 @@ pub async fn db_get_users_sharing_channels_with(user_id: Uuid) -> Result<Vec<Uui
     let user_id_str = user_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
             "SELECT DISTINCT cu2.user_id 

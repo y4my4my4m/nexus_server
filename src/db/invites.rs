@@ -1,10 +1,9 @@
+use crate::db::db_config;
 use crate::errors::{Result, ServerError};
 use common::{ServerInvite, ServerInviteStatus, User, Server};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 use std::str::FromStr;
-
-const DB_PATH: &str = "cyberpunk_bbs.db";
 
 pub async fn db_create_server_invite(
     from_user_id: Uuid,
@@ -15,7 +14,7 @@ pub async fn db_create_server_invite(
     let timestamp = chrono::Utc::now().timestamp();
     
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         conn.execute(
             "INSERT INTO server_invites (id, from_user_id, to_user_id, server_id, timestamp, status) 
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -37,7 +36,7 @@ pub async fn db_create_server_invite(
 
 pub async fn db_get_pending_invites_for_user(user_id: Uuid) -> Result<Vec<ServerInvite>> {
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         let mut stmt = conn.prepare(
             "SELECT si.id, si.from_user_id, si.to_user_id, si.server_id, si.timestamp, si.status,
                     u.username, u.color, u.role, u.profile_pic, u.cover_banner,
@@ -120,7 +119,7 @@ pub async fn db_update_invite_status(invite_id: Uuid, status: ServerInviteStatus
     };
     
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         conn.execute(
             "UPDATE server_invites SET status = ?1 WHERE id = ?2",
             params![status_str, invite_id.to_string()],
@@ -134,7 +133,7 @@ pub async fn db_update_invite_status(invite_id: Uuid, status: ServerInviteStatus
 
 pub async fn db_get_invite_by_id(invite_id: Uuid) -> Result<Option<ServerInvite>> {
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         let mut stmt = conn.prepare(
             "SELECT si.id, si.from_user_id, si.to_user_id, si.server_id, si.timestamp, si.status,
                     u.username, u.color, u.role, u.profile_pic, u.cover_banner,
@@ -212,7 +211,7 @@ pub async fn db_check_existing_invite(
     server_id: Uuid
 ) -> Result<bool> {
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         let mut stmt = conn.prepare(
             "SELECT COUNT(*) FROM server_invites 
              WHERE from_user_id = ?1 AND to_user_id = ?2 AND server_id = ?3 AND status = 'Pending'"
@@ -239,7 +238,7 @@ pub async fn db_get_pending_invite_from_user(
     to_user_id: Uuid,
 ) -> Result<Option<ServerInvite>> {
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         let mut stmt = conn.prepare(
             "SELECT si.id, si.from_user_id, si.to_user_id, si.server_id, si.timestamp, si.status,
                     u.username, u.color, u.role, u.profile_pic, u.cover_banner,

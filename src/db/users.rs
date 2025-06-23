@@ -1,4 +1,5 @@
 use crate::auth::{hash_password, verify_password};
+use crate::db::db_config;
 use crate::util::parse_user_color;
 use common::{UserProfile, UserRole, UserInfo, UserStatus};
 use rusqlite::{params, Connection};
@@ -6,11 +7,9 @@ use tokio::task;
 use tracing::info;
 use uuid::Uuid;
 
-const DB_PATH: &str = "cyberpunk_bbs.db";
-
 pub async fn db_count_users() -> Result<i64, String> {
     task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
@@ -25,7 +24,7 @@ pub async fn db_get_user_info_by_id(user_id: Uuid) -> Result<UserInfo, String> {
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT id, username, color, role FROM users WHERE id = ?1"
@@ -62,7 +61,7 @@ pub async fn db_get_users_info_by_ids(user_ids: &[Uuid]) -> Result<Vec<UserInfo>
     let placeholders = user_ids_str.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let query = format!(
             "SELECT id, username, color, role FROM users WHERE id IN ({})", 
@@ -111,7 +110,7 @@ pub async fn db_register_user(
     let role = role.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         // Check if username exists (case insensitive)
         let mut stmt = conn
@@ -164,7 +163,7 @@ pub async fn db_login_user(username: &str, password: &str) -> Result<UserProfile
     let password = password.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn
             .prepare("SELECT id, username, password_hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner FROM users WHERE LOWER(username) = ?1")
@@ -220,7 +219,7 @@ pub async fn db_get_user_by_id(user_id: Uuid) -> Result<UserProfile, String> {
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT id, username, password_hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner 
@@ -273,7 +272,7 @@ pub async fn db_get_user_by_username(username: &str) -> Result<UserProfile, Stri
     let username_lower = username.to_lowercase();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT id, username, password_hash, color, role, bio, url1, url2, url3, location, profile_pic, cover_banner 
@@ -327,7 +326,7 @@ pub async fn db_update_user_password(user_id: Uuid, new_password: &str) -> Resul
     let new_password = new_password.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let hash = hash_password(&new_password).map_err(|e| e.to_string())?;
 
         conn.execute(
@@ -347,7 +346,7 @@ pub async fn db_update_user_color(user_id: Uuid, color: &str) -> Result<(), Stri
     let color = color.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         conn.execute(
             "UPDATE users SET color = ?1 WHERE id = ?2",
@@ -374,7 +373,7 @@ pub async fn db_update_user_profile(
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         conn.execute(
             "UPDATE users SET bio = ?1, url1 = ?2, url2 = ?3, url3 = ?4, location = ?5, profile_pic = ?6, cover_banner = ?7 WHERE id = ?8",
@@ -392,7 +391,7 @@ pub async fn db_get_user_profile(user_id: Uuid) -> Result<UserProfile, String> {
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT id, username, bio, url1, url2, url3, location, profile_pic, cover_banner, color, role 
@@ -445,7 +444,7 @@ pub async fn db_get_user_avatar(user_id: Uuid) -> Result<Option<String>, String>
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         let mut stmt = conn.prepare(
             "SELECT profile_pic FROM users WHERE id = ?1"

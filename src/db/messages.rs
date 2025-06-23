@@ -1,9 +1,8 @@
+use crate::db::db_config;
 use common::{DirectMessage, User, UserInfo, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
-
-const DB_PATH: &str = "cyberpunk_bbs.db";
 
 pub async fn db_store_direct_message(
     from_user_id: Uuid,
@@ -16,7 +15,7 @@ pub async fn db_store_direct_message(
     let content = content.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let id = Uuid::new_v4();
 
         conn.execute(
@@ -40,7 +39,7 @@ pub async fn db_get_direct_messages(
     let user2_id_str = user2_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut messages: Vec<DirectMessage> = Vec::new();
         
@@ -134,7 +133,7 @@ pub async fn db_get_dm_user_list_lightweight(user_id: Uuid) -> Result<Vec<UserIn
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         // Get users we've had conversations with
         let mut stmt = conn.prepare(
@@ -195,7 +194,7 @@ pub async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         // Get users we've had conversations with
         let mut stmt = conn.prepare(
@@ -269,7 +268,7 @@ pub async fn db_get_direct_messages_by_timestamp(
     let limit = limit.min(200); // Safety limit
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let mut messages = Vec::new();
         
         let base_query = 
@@ -341,7 +340,7 @@ pub async fn db_get_direct_message_count(user1_id: Uuid, user2_id: Uuid) -> Resu
     let user2_id_str = user2_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
             "SELECT COUNT(*) FROM direct_messages 

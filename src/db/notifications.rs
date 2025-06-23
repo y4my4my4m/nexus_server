@@ -1,9 +1,8 @@
+use crate::db::db_config;
 use common::{Notification, NotificationType};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
-
-const DB_PATH: &str = "cyberpunk_bbs.db";
 
 pub async fn db_insert_notification(
     user_id: Uuid,
@@ -17,7 +16,7 @@ pub async fn db_insert_notification(
     let now = chrono::Utc::now().timestamp();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let id = Uuid::new_v4();
 
         conn.execute(
@@ -38,7 +37,7 @@ pub async fn db_get_notifications(
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut notifications = Vec::new();
         
@@ -138,7 +137,7 @@ pub async fn db_mark_notification_read(notification_id: Uuid) -> Result<(), Stri
     let notification_id_str = notification_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
 
         conn.execute(
             "UPDATE notifications SET read = 1 WHERE id = ?1",

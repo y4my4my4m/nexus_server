@@ -1,9 +1,8 @@
+use crate::db::db_config;
 use common::Server;
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
-
-const DB_PATH: &str = "cyberpunk_bbs.db";
 
 pub async fn db_create_server(
     name: &str,
@@ -19,7 +18,7 @@ pub async fn db_create_server(
     let banner = banner.map(|s| s.to_string());
     let owner = owner.to_string();
     tokio::task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         let id = Uuid::new_v4();
         conn.execute(
             "INSERT INTO servers (id, name, description, public, owner, icon, banner) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -41,7 +40,7 @@ pub async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
     let user_id_str = user_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
             "SELECT s.id, s.name, s.description, s.public, s.invite_code, s.icon, s.banner, s.owner 
@@ -170,7 +169,7 @@ pub async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
 
 pub async fn get_default_server_id() -> Result<Option<Uuid>, String> {
     task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare("SELECT id FROM servers ORDER BY rowid ASC LIMIT 1")
             .map_err(|e| e.to_string())?;
@@ -187,7 +186,7 @@ pub async fn get_default_server_id() -> Result<Option<Uuid>, String> {
 /// Get all servers (simplified for user registration)
 pub async fn db_get_servers() -> Result<Vec<common::Server>, String> {
     task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare(
             "SELECT id, name, description, owner FROM servers ORDER BY id LIMIT 1"
@@ -229,7 +228,7 @@ pub async fn db_add_user_to_server(server_id: Uuid, user_id: Uuid) -> Result<(),
     let user_id_str = user_id.to_string();
     
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         conn.execute(
             "INSERT OR IGNORE INTO server_users (server_id, user_id) VALUES (?1, ?2)",
@@ -247,7 +246,7 @@ pub async fn db_is_user_in_server(user_id: Uuid, server_id: Uuid) -> Result<bool
     let server_id_str = server_id.to_string();
 
     task::spawn_blocking(move || {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         let mut stmt = conn.prepare("SELECT COUNT(*) FROM server_users WHERE user_id = ?1 AND server_id = ?2")
             .map_err(|e| e.to_string())?;
@@ -263,7 +262,7 @@ pub async fn db_is_user_in_server(user_id: Uuid, server_id: Uuid) -> Result<bool
 
 pub async fn ensure_default_server_exists() -> Result<(), String> {
     task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH).map_err(|e| e.to_string())?;
+        let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
         // Check if any servers exist
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM servers", [], |row| row.get(0))

@@ -1,12 +1,11 @@
+use crate::db::db_config;
 use crate::errors::{Result, ServerError};
 use rusqlite::{Connection, Result as SqlResult};
 use tracing::info;
 
-const DB_PATH: &str = "cyberpunk_bbs.db";
-
 pub async fn init_db() -> Result<()> {
     tokio::task::spawn_blocking(|| {
-        let conn = Connection::open(DB_PATH)?;
+        let conn = Connection::open(db_config::get_db_path())?;
         create_tables(&conn)?;
         add_missing_columns(&conn)?;
         Ok::<(), rusqlite::Error>(())
