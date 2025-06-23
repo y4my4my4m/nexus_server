@@ -13,6 +13,8 @@ use common::{ClientMessage, ServerMessage};
 use crate::api::routes::MessageRouter;
 use crate::db;
 use crate::services::BroadcastService;
+use tokio_rustls::server::TlsStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Represents a connected peer/client
 pub struct Peer {
@@ -53,10 +55,13 @@ async fn handle_user_disconnect(peer_map: &PeerMap, peer_id: Uuid, reason: &str)
 }
 
 /// Main connection handler - processes client connections and messages
-pub async fn handle_connection(
-    stream: TcpStream,
+pub async fn handle_connection<S>(
+    stream: S,
     peer_map: PeerMap,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let peer_id = Uuid::new_v4();
     let (tx, mut rx) = mpsc::unbounded_channel();
 
