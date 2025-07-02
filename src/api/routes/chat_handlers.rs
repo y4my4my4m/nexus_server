@@ -1,6 +1,6 @@
 use super::MessageRouter;
 use crate::db::{channels, messages};
-use common::{ServerMessage, User, PaginationCursor, PaginationDirection};
+use nexus_tui_common::{ServerMessage, User, PaginationCursor, PaginationDirection};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -98,9 +98,9 @@ impl MessageRouter {
                 // Update online status based on who's actually connected
                 for user_info in &mut user_infos {
                     user_info.status = if crate::services::BroadcastService::is_user_online(&self.peer_map, user_info.id).await {
-                        common::UserStatus::Connected
+                        nexus_tui_common::UserStatus::Connected
                     } else {
-                        common::UserStatus::Offline
+                        nexus_tui_common::UserStatus::Offline
                     };
                 }
 
@@ -137,9 +137,9 @@ impl MessageRouter {
                 // Update online status based on who's actually connected
                 for user_info in &mut user_infos {
                     user_info.status = if crate::services::BroadcastService::is_user_online(&self.peer_map, user_info.id).await {
-                        common::UserStatus::Connected
+                        nexus_tui_common::UserStatus::Connected
                     } else {
-                        common::UserStatus::Offline
+                        nexus_tui_common::UserStatus::Offline
                     };
                 }
 

@@ -1,7 +1,7 @@
 use crate::auth::{hash_password, verify_password};
 use crate::db::db_config;
 use crate::util::parse_user_color;
-use common::{UserProfile, UserRole, UserInfo, UserStatus};
+use nexus_tui_common::{UserProfile, UserRole, UserInfo, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
 use tracing::info;

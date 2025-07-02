@@ -1,5 +1,5 @@
 use crate::api::connection::PeerMap;
-use common::{ServerMessage, User};
+use nexus_tui_common::{ServerMessage, User};
 use std::collections::HashSet;
 use tracing::{error, info};
 use uuid::Uuid;

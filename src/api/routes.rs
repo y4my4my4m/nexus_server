@@ -1,6 +1,6 @@
 use crate::api::connection::PeerMap;
 use crate::errors::Result;
-use common::{ClientMessage, ServerMessage, User};
+use nexus_tui_common::{ClientMessage, ServerMessage, User};
 use tokio::sync::mpsc;
 use tracing::error;
 use uuid::Uuid;

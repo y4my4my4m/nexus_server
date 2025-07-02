@@ -1,5 +1,5 @@
 use crate::db::db_config;
-use common::Server;
+use nexus_tui_common::Server;
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
@@ -135,12 +135,12 @@ pub async fn db_get_user_servers(user_id: Uuid) -> Result<Vec<Server>, String> {
                     if write != 0 { can_write.push(uuid); }
                 }
 
-                channels.push(common::Channel {
+                channels.push(nexus_tui_common::Channel {
                     id: channel_id,
                     server_id,
                     name: chan_name,
                     description: chan_desc,
-                    permissions: common::ChannelPermissions { can_read, can_write },
+                    permissions: nexus_tui_common::ChannelPermissions { can_read, can_write },
                     userlist: channel_userlist,
                     messages: Vec::new(), // Always empty in server list
                 });
@@ -184,7 +184,7 @@ pub async fn get_default_server_id() -> Result<Option<Uuid>, String> {
 }
 
 /// Get all servers (simplified for user registration)
-pub async fn db_get_servers() -> Result<Vec<common::Server>, String> {
+pub async fn db_get_servers() -> Result<Vec<nexus_tui_common::Server>, String> {
     task::spawn_blocking(|| {
         let conn = Connection::open(db_config::get_db_path()).map_err(|e| e.to_string())?;
         
@@ -196,7 +196,7 @@ pub async fn db_get_servers() -> Result<Vec<common::Server>, String> {
             let owner_str: String = row.get(3)?;
             let owner_uuid = Uuid::parse_str(&owner_str).map_err(|_| rusqlite::Error::InvalidColumnType(3, "owner".to_string(), rusqlite::types::Type::Text))?;
             
-            Ok(common::Server {
+            Ok(nexus_tui_common::Server {
                 id: Uuid::parse_str(&row.get::<_, String>(0)?).map_err(|_| rusqlite::Error::InvalidColumnType(0, "id".to_string(), rusqlite::types::Type::Text))?,
                 name: row.get(1)?,
                 description: row.get(2)?,

@@ -8,7 +8,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use uuid::Uuid;
 use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
-use common::{ClientMessage, ServerMessage};
+use nexus_tui_common::{ClientMessage, ServerMessage};
 
 use crate::api::routes::MessageRouter;
 use crate::db;
@@ -38,14 +38,14 @@ async fn handle_user_disconnect(peer_map: &PeerMap, peer_id: Uuid, reason: &str)
     // Broadcast user disconnect if they were authenticated
     if let Some(user_id) = user_id_opt {
         if let Ok(profile) = db::users::db_get_user_by_id(user_id).await {
-            let user = common::User {
+            let user = nexus_tui_common::User {
                 id: profile.id,
                 username: profile.username.clone(),
                 color: profile.color,
                 role: profile.role,
                 profile_pic: profile.profile_pic,
                 cover_banner: profile.cover_banner,
-                status: common::UserStatus::Offline,
+                status: nexus_tui_common::UserStatus::Offline,
             };
             
             info!("Broadcasting disconnect for user: {} ({})", user.username, reason);
@@ -81,7 +81,7 @@ where
 
     let peer_map_task = peer_map.clone();
     tokio::spawn(async move {
-        let mut current_user: Option<common::User> = None;
+        let mut current_user: Option<nexus_tui_common::User> = None;
         let router = MessageRouter::new(peer_map_task.clone());
         
         loop {

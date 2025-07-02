@@ -1,6 +1,6 @@
 use super::MessageRouter;
 use crate::services::UserService;
-use common::{ServerMessage, User, UserColor};
+use nexus_tui_common::{ServerMessage, User, UserColor};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 

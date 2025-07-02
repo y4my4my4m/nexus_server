@@ -3,7 +3,7 @@ use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;
 use crate::api::connection::PeerMap;
 use crate::auth::validate_password;
-use common::{User, UserProfile, UserStatus};
+use nexus_tui_common::{User, UserProfile, UserStatus};
 use tracing::{error, info};
 use uuid::Uuid;
 

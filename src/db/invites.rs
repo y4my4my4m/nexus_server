@@ -1,6 +1,6 @@
 use crate::db::db_config;
 use crate::errors::{Result, ServerError};
-use common::{ServerInvite, ServerInviteStatus, User, Server};
+use nexus_tui_common::{ServerInvite, ServerInviteStatus, User, Server};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 use std::str::FromStr;
@@ -71,7 +71,7 @@ pub async fn db_get_pending_invites_for_user(user_id: Uuid) -> Result<Vec<Server
                 role,
                 profile_pic: row.get(9)?,
                 cover_banner: row.get(10)?,
-                status: common::UserStatus::Connected,
+                status: nexus_tui_common::UserStatus::Connected,
             };
             
             let server = Server {
@@ -167,7 +167,7 @@ pub async fn db_get_invite_by_id(invite_id: Uuid) -> Result<Option<ServerInvite>
                 role,
                 profile_pic: row.get(9)?,
                 cover_banner: row.get(10)?,
-                status: common::UserStatus::Connected,
+                status: nexus_tui_common::UserStatus::Connected,
             };
             
             let server = Server {
@@ -274,7 +274,7 @@ pub async fn db_get_pending_invite_from_user(
                 role,
                 profile_pic: row.get(9)?,
                 cover_banner: row.get(10)?,
-                status: common::UserStatus::Connected,
+                status: nexus_tui_common::UserStatus::Connected,
             };
             
             let server = Server {

@@ -2,7 +2,7 @@ use crate::db::{channels, messages};
 use crate::errors::{Result, ServerError};
 use crate::services::{BroadcastService, NotificationService};
 use crate::api::connection::PeerMap;
-use common::{ChannelMessage, DirectMessage, ServerMessage, User};
+use nexus_tui_common::{ChannelMessage, DirectMessage, ServerMessage, User};
 use tracing::info;
 use uuid::Uuid;
 
@@ -365,9 +365,9 @@ impl ChatService {
         // Update online status
         for user in &mut users {
             user.status = if BroadcastService::is_user_online(peer_map, user.id).await {
-                common::UserStatus::Connected
+                nexus_tui_common::UserStatus::Connected
             } else {
-                common::UserStatus::Offline
+                nexus_tui_common::UserStatus::Offline
             };
         }
 
@@ -382,9 +382,9 @@ impl ChatService {
         // Update online status
         for user in &mut users {
             user.status = if BroadcastService::is_user_online(peer_map, user.id).await {
-                common::UserStatus::Connected
+                nexus_tui_common::UserStatus::Connected
             } else {
-                common::UserStatus::Offline
+                nexus_tui_common::UserStatus::Offline
             };
         }
 

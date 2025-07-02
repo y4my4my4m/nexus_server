@@ -1,6 +1,6 @@
 use crate::db::db_config;
 use crate::util::parse_user_color;
-use common::{Forum, Thread, Post, User, UserRole, UserStatus, UserInfo, ForumLightweight, ThreadLightweight, PostLightweight};
+use nexus_tui_common::{Forum, Thread, Post, User, UserRole, UserStatus, UserInfo, ForumLightweight, ThreadLightweight, PostLightweight};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;

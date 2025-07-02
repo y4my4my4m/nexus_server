@@ -1,5 +1,5 @@
 use crate::db::db_config;
-use common::{Notification, NotificationType};
+use nexus_tui_common::{Notification, NotificationType};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;

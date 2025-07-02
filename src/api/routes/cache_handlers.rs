@@ -1,6 +1,6 @@
 use super::MessageRouter;
 use crate::services::BroadcastService;
-use common::ServerMessage;
+use nexus_tui_common::ServerMessage;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 

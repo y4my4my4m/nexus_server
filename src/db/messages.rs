@@ -1,5 +1,5 @@
 use crate::db::db_config;
-use common::{DirectMessage, User, UserInfo, UserRole, UserStatus};
+use nexus_tui_common::{DirectMessage, User, UserInfo, UserRole, UserStatus};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;
@@ -173,7 +173,7 @@ pub async fn db_get_dm_user_list_lightweight(user_id: Uuid) -> Result<Vec<UserIn
                 users.push(UserInfo {
                     id: other_user_id,
                     username,
-                    color: common::UserColor::new(color),
+                    color: nexus_tui_common::UserColor::new(color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,
@@ -236,7 +236,7 @@ pub async fn db_get_dm_user_list(user_id: Uuid) -> Result<Vec<User>, String> {
                 users.push(User {
                     id: other_user_id,
                     username,
-                    color: common::UserColor::new(color),
+                    color: nexus_tui_common::UserColor::new(color),
                     role: match role.as_str() {
                         "Admin" => UserRole::Admin,
                         "Moderator" => UserRole::Moderator,

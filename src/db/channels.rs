@@ -2,7 +2,7 @@
 
 use crate::db::db_config;
 use crate::util::parse_user_color;
-use common::{ChannelMessage, User, UserRole, UserStatus, UserInfo};
+use nexus_tui_common::{ChannelMessage, User, UserRole, UserStatus, UserInfo};
 use rusqlite::{params, Connection};
 use tokio::task;
 use uuid::Uuid;

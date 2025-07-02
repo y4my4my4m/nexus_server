@@ -2,7 +2,7 @@ use crate::db::notifications;
 use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;
 use crate::api::connection::PeerMap;
-use common::{Notification, ServerMessage};
+use nexus_tui_common::{Notification, ServerMessage};
 use tracing::{error, info};
 use uuid::Uuid;
 

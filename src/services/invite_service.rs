@@ -5,7 +5,7 @@ use crate::db::messages;
 use crate::errors::{Result, ServerError};
 use crate::services::BroadcastService;
 use crate::api::connection::PeerMap;
-use common::{ServerInvite, ServerInviteStatus, ServerMessage, User, DirectMessage};
+use nexus_tui_common::{ServerInvite, ServerInviteStatus, ServerMessage, User, DirectMessage};
 use tracing::{error, info};
 use uuid::Uuid;
 
@@ -50,7 +50,7 @@ impl InviteService {
                         role: from_user_profile.role,
                         profile_pic: from_user_profile.profile_pic.clone(),
                         cover_banner: from_user_profile.cover_banner.clone(),
-                        status: common::UserStatus::Connected,
+                        status: nexus_tui_common::UserStatus::Connected,
                     };
                     
                     let timestamp = chrono::Utc::now().timestamp();
@@ -155,7 +155,7 @@ impl InviteService {
                 role: user.role,
                 profile_pic: user.profile_pic,
                 cover_banner: user.cover_banner,
-                status: common::UserStatus::Connected, // Default status since UserProfile doesn't have status
+                status: nexus_tui_common::UserStatus::Connected, // Default status since UserProfile doesn't have status
             },
         };
         

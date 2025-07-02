@@ -14,7 +14,7 @@ use std::env;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{error, info};
-use common::config::ServerConfig;
+use nexus_tui_common::config::ServerConfig;
 use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};

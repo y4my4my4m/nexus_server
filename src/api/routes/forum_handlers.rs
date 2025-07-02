@@ -1,6 +1,6 @@
 use super::MessageRouter;
 use crate::db;
-use common::{ServerMessage, User};
+use nexus_tui_common::{ServerMessage, User};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -24,7 +24,7 @@ impl MessageRouter {
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            if user.role == common::UserRole::Admin {
+            if user.role == nexus_tui_common::UserRole::Admin {
                 match db::forums::db_create_forum(&name, &description).await {
                     Ok(_) => {
                         self.send_success(response_sender, "Forum created successfully");
@@ -54,7 +54,7 @@ impl MessageRouter {
         response_sender: &mpsc::UnboundedSender<ServerMessage>,
     ) -> crate::errors::Result<()> {
         if let Some(user) = current_user {
-            if user.role == common::UserRole::Admin {
+            if user.role == nexus_tui_common::UserRole::Admin {
                 match db::forums::db_delete_forum(forum_id).await {
                     Ok(_) => {
                         self.send_success(response_sender, "Forum deleted successfully");

@@ -2,7 +2,7 @@
 
 use regex::Regex;
 use ratatui::style::Color;
-use common::{UserRole, UserColor};
+use nexus_tui_common::{UserRole, UserColor};
 
 // Parses a color from a string using the ratatui library.
 pub fn parse_color(color_str: &str) -> Color {
